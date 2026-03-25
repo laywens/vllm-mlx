@@ -9,6 +9,7 @@ directly from tokenizer.json.
 
 import json
 import logging
+from pathlib import Path
 
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 
