@@ -3982,7 +3982,6 @@ async def _wait_with_disconnect(
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
-    _validate_model_name(request.model)
     engine = get_engine()
     _enforce_request_model_id(request.model)
 
@@ -4143,7 +4142,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
-    _validate_model_name(request.model)
     engine = get_engine()
     _enforce_request_model_id(request.model)
     response_request_id = f"chatreq-{uuid.uuid4().hex[:8]}"
@@ -4448,8 +4446,6 @@ async def create_anthropic_message(
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
     _enforce_request_model_id(anthropic_request.model)
-
-    _validate_model_name(anthropic_request.model)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
