@@ -192,6 +192,10 @@ class ChatCompletionRequest(BaseModel):
     include_diagnostics: bool = False
     # Diagnostics detail level when diagnostics are enabled.
     diagnostics_level: Literal["basic", "deep"] | None = None
+    # SpecPrefill: per-request enable/disable (None = server decides)
+    specprefill: bool | None = None
+    # SpecPrefill: per-request keep percentage (0.0-1.0, None = use server default)
+    specprefill_keep_pct: float | None = None
 
 
 class AssistantMessage(BaseModel):

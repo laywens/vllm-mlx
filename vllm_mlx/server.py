@@ -1443,7 +1443,6 @@ def _coerce_tool_call_delta_arguments(
         call["arguments"] = _coerce_tool_arguments(arguments, name, tools)
     return call
 
-
 def _parse_tool_calls_with_parser(
     output_text: str, request: ChatCompletionRequest | None = None
 ) -> tuple[str, list | None]:
@@ -1599,6 +1598,12 @@ def load_model(
     max_tokens: int = 32768,
     force_mllm: bool = False,
     served_model_name: str | None = None,
+    mtp: bool = False,
+    prefill_step_size: int = 2048,
+    specprefill_enabled: bool = False,
+    specprefill_threshold: int = 8192,
+    specprefill_keep_pct: float = 0.3,
+    specprefill_draft_model: str = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -1611,6 +1616,12 @@ def load_model(
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
         served_model_name: Override model name used in API responses
+        mtp: Enable native MTP speculative decoding (SimpleEngine only)
+        prefill_step_size: Chunk size for prompt prefill processing (default: 2048)
+        specprefill_enabled: Enable SpecPrefill (SimpleEngine only)
+        specprefill_threshold: Minimum suffix tokens to trigger SpecPrefill (default: 8192)
+        specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
+        specprefill_draft_model: Path to small draft model for SpecPrefill scoring
     """
     global _engine, _model_name, _model_path, _default_max_tokens, _tool_parser_instance
     global _batch_divergence_state
@@ -1641,7 +1652,16 @@ def load_model(
         _batch_divergence_state.reset(model_name=model_name, engine_type="batched")
     else:
         logger.info(f"Loading model with SimpleEngine: {model_name}")
-        _engine = SimpleEngine(model_name=model_name, force_mllm=force_mllm)
+        _engine = SimpleEngine(
+            model_name=model_name,
+            force_mllm=force_mllm,
+            mtp=mtp,
+            prefill_step_size=prefill_step_size,
+            specprefill_enabled=specprefill_enabled,
+            specprefill_threshold=specprefill_threshold,
+            specprefill_keep_pct=specprefill_keep_pct,
+            specprefill_draft_model=specprefill_draft_model,
+        )
         # Start SimpleEngine synchronously (no background loop)
         # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)
         loop = asyncio.new_event_loop()
@@ -3531,8 +3551,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
         elapsed = time.perf_counter() - start_time
         logger.info(
-            f"Embeddings: {len(texts)} inputs, {prompt_tokens} tokens "
-            f"in {elapsed:.2f}s"
+            f"Embeddings: {len(texts)} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"
         )
 
         # Build OpenAI-compatible response with ordered indices
@@ -3553,8 +3572,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         raise HTTPException(
             status_code=503,
             detail=(
-                "mlx-embeddings not installed. "
-                "Install with: pip install mlx-embeddings"
+                "mlx-embeddings not installed. Install with: pip install mlx-embeddings"
             ),
         )
     except HTTPException:
@@ -3964,6 +3982,7 @@ async def _wait_with_disconnect(
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
+    _validate_model_name(request.model)
     engine = get_engine()
     _enforce_request_model_id(request.model)
 
@@ -4124,6 +4143,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
+    _validate_model_name(request.model)
     engine = get_engine()
     _enforce_request_model_id(request.model)
     response_request_id = f"chatreq-{uuid.uuid4().hex[:8]}"
@@ -4193,6 +4213,23 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         )
 
     has_media = bool(images or videos)
+    if engine.is_mllm and not has_media:
+        # MLLM extracts media from messages directly, so images/videos are
+        # always empty. Check message content for video/image types instead.
+        for msg in request.messages:
+            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+            if isinstance(content, list):
+                for item in content:
+                    item_type = (
+                        item.type
+                        if hasattr(item, "type")
+                        else (item.get("type", "") if isinstance(item, dict) else "")
+                    )
+                    if item_type in ("image_url", "image", "video", "video_url"):
+                        has_media = True
+                        break
+            if has_media:
+                break
 
     # Handle response_format - inject system prompt if needed
     response_format = request.response_format
@@ -4229,6 +4266,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             chat_kwargs["video_fps"] = request.video_fps
         if request.video_max_frames:
             chat_kwargs["video_max_frames"] = request.video_max_frames
+
+    # SpecPrefill: per-request overrides
+    if request.specprefill is not None:
+        chat_kwargs["specprefill"] = request.specprefill
+    if request.specprefill_keep_pct is not None:
+        chat_kwargs["specprefill_keep_pct"] = request.specprefill_keep_pct
 
     # Add tools if provided
     if request.tools:
@@ -4405,6 +4448,8 @@ async def create_anthropic_message(
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
     _enforce_request_model_id(anthropic_request.model)
+
+    _validate_model_name(anthropic_request.model)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
