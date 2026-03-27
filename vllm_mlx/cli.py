@@ -55,6 +55,9 @@ def _build_startup_diagnostics(
     api_key: str | None,
     rate_limit: int,
     runtime_mode: str,
+    trust_remote_code: bool = False,
+    allow_local_media_paths: bool = False,
+    allow_private_media_hosts: bool = False,
     cache_profile: CacheProfile | None = None,
     deterministic_profile: DeterministicProfile | None = None,
 ) -> list[str]:
@@ -79,6 +82,18 @@ def _build_startup_diagnostics(
     if rate_limit_enabled and not auth_enabled:
         diagnostics.append(
             "WARN: Rate limiting enabled without API keys; client identity falls back to IP and may be coarse."
+        )
+    if trust_remote_code:
+        diagnostics.append(
+            "WARN: trust_remote_code is enabled; only serve models from trusted repositories."
+        )
+    if allow_local_media_paths:
+        diagnostics.append(
+            "WARN: Local filesystem media paths are enabled for API requests."
+        )
+    if allow_private_media_hosts:
+        diagnostics.append(
+            "WARN: Private or loopback media URLs are enabled for API requests."
         )
     if rate_limit_enabled and rate_limit < 5:
         diagnostics.append(
@@ -277,6 +292,8 @@ def serve_command(args):
     server._trust_requests_when_auth_disabled = (
         args.trust_requests_when_auth_disabled
     )
+    server._allow_local_media_paths = args.allow_local_media_paths
+    server._allow_private_media_hosts = args.allow_private_media_hosts
     if args.rate_limit > 0:
         server._rate_limiter = RateLimiter(
             requests_per_minute=args.rate_limit, enabled=True
@@ -542,6 +559,9 @@ def serve_command(args):
         api_key=args.api_key,
         rate_limit=args.rate_limit,
         runtime_mode=runtime_mode,
+        trust_remote_code=args.trust_remote_code,
+        allow_local_media_paths=args.allow_local_media_paths,
+        allow_private_media_hosts=args.allow_private_media_hosts,
         cache_profile=cache_profile if use_batching else None,
         deterministic_profile=deterministic_profile,
     )
@@ -561,6 +581,7 @@ def serve_command(args):
         max_tokens=args.max_tokens,
         force_mllm=args.mllm,
         served_model_name=args.served_model_name,
+        trust_remote_code=args.trust_remote_code,
         mtp=args.enable_mtp,
         prefill_step_size=args.prefill_step_size,
         specprefill_enabled=args.specprefill,
@@ -1263,6 +1284,33 @@ Examples:
         help=(
             "When --api-key is disabled, treat requests as trusted for "
             "repetition_policy_override. Defaults to false."
+        ),
+    )
+    serve_parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow model/tokenizer remote code during loading. Disabled by default; "
+            "enable only for trusted repositories."
+        ),
+    )
+    serve_parser.add_argument(
+        "--allow-local-media-paths",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow chat requests to reference server-local image/video paths. "
+            "Disabled by default."
+        ),
+    )
+    serve_parser.add_argument(
+        "--allow-private-media-hosts",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow chat requests to fetch media from private or loopback URLs. "
+            "Disabled by default."
         ),
     )
     serve_parser.add_argument(

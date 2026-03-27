@@ -687,7 +687,7 @@ class MLXMultimodalLM:
     def __init__(
         self,
         model_name: str,
-        trust_remote_code: bool = True,
+        trust_remote_code: bool = False,
         enable_cache: bool = True,
         cache_size: int = 50,
     ):
@@ -726,8 +726,14 @@ class MLXMultimodalLM:
 
             logger.info(f"Loading MLLM: {self.model_name}")
 
-            self.model, self.processor = load(self.model_name)
-            self.config = load_config(self.model_name)
+            self.model, self.processor = load(
+                self.model_name,
+                trust_remote_code=self.trust_remote_code,
+            )
+            self.config = load_config(
+                self.model_name,
+                trust_remote_code=self.trust_remote_code,
+            )
 
             self._loaded = True
             self._video_native = hasattr(
@@ -1474,11 +1480,6 @@ class MLXMultimodalLM:
         logger.info(
             f"Applying chat template with {len(chat_messages)} messages, {len(all_images)} images"
         )
-        for i, cm in enumerate(chat_messages):
-            content_preview = str(cm.get("content", ""))[:80]
-            logger.info(
-                f"  Chat msg {i}: role={cm['role']}, content={content_preview}..."
-            )
 
         # Build template kwargs for tool definitions (tools already popped above)
         template_extra_kwargs = {}

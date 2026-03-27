@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -58,6 +59,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
@@ -149,6 +151,8 @@ _deterministic_serialize: bool = False  # Serialize tracked routes when determin
 _strict_model_id: bool = False  # Enforce request model to match loaded model id
 _bind_host: str = "0.0.0.0"  # Effective bind host used for trust policy checks
 _trust_requests_when_auth_disabled: bool = False
+_allow_local_media_paths: bool = False
+_allow_private_media_hosts: bool = False
 _repetition_policy: str = "safe"  # safe | strict
 _repetition_override_policy: str = "trusted_only"  # trusted_only | disabled
 
@@ -572,6 +576,134 @@ def _is_trusted_request(request: Request) -> bool:
         return _is_request_client_loopback(request)
 
     return _trust_requests_when_auth_disabled
+
+
+def _is_data_url(value: str) -> bool:
+    """Return True when a media source is an inline data URL."""
+    return value.startswith("data:")
+
+
+def _is_probable_inline_media_data(value: str) -> bool:
+    """Best-effort check for raw base64-style inline media payloads."""
+    stripped = value.strip()
+    return (
+        len(stripped) > 100
+        and not stripped.startswith(("http://", "https://", "/", "./", "../", "~"))
+        and "://" not in stripped
+    )
+
+
+def _is_non_public_ip(ip: ipaddress._BaseAddress) -> bool:
+    """True for loopback/private/link-local/reserved addresses."""
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _url_targets_private_host(url: str) -> bool:
+    """Best-effort detection for loopback/private URL destinations."""
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail=f"Invalid media URL: {url!r}")
+
+    normalized = hostname.strip().lower()
+    if normalized == "localhost":
+        return True
+
+    try:
+        return _is_non_public_ip(ipaddress.ip_address(normalized))
+    except ValueError:
+        pass
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        # If DNS lookup fails, defer to the downstream fetch path.
+        return False
+
+    for info in infos:
+        candidate = info[4][0].split("%", 1)[0]
+        try:
+            if _is_non_public_ip(ipaddress.ip_address(candidate)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _iter_media_sources(messages: list[Message] | list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Extract media-bearing content values from OpenAI-style messages."""
+    sources: list[tuple[str, str]] = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+
+        for item in content:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump(exclude_none=True)
+            elif hasattr(item, "dict"):
+                item = {k: v for k, v in item.dict().items() if v is not None}
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type", "")).lower()
+            if item_type == "image_url":
+                raw_source = item.get("image_url", {})
+            elif item_type == "image":
+                raw_source = item.get("image", item.get("url", ""))
+            elif item_type == "video_url":
+                raw_source = item.get("video_url", {})
+            elif item_type == "video":
+                raw_source = item.get("video", item.get("url", ""))
+            elif item_type == "audio_url":
+                raw_source = item.get("audio_url", {})
+            else:
+                continue
+
+            if isinstance(raw_source, dict):
+                raw_source = raw_source.get("url", "")
+            if isinstance(raw_source, str):
+                source = raw_source.strip()
+                if source:
+                    sources.append((item_type, source))
+    return sources
+
+
+def _validate_request_media_sources(
+    messages: list[Message] | list[dict[str, Any]],
+) -> None:
+    """Enforce media source policy before model helpers touch request inputs."""
+    for item_type, source in _iter_media_sources(messages):
+        if source.startswith(("http://", "https://")):
+            if not _allow_private_media_hosts and _url_targets_private_host(source):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Private or loopback media URLs are disabled for {item_type}. "
+                        "Restart with --allow-private-media-hosts to enable them."
+                    ),
+                )
+            continue
+
+        if _is_data_url(source) or _is_probable_inline_media_data(source):
+            continue
+
+        if not _allow_local_media_paths:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Local media paths are disabled for {item_type}. "
+                    "Restart with --allow-local-media-paths to enable them."
+                ),
+            )
 
 
 def _resolve_repetition_policy(
@@ -1598,6 +1730,7 @@ def load_model(
     max_tokens: int = 32768,
     force_mllm: bool = False,
     served_model_name: str | None = None,
+    trust_remote_code: bool = False,
     mtp: bool = False,
     prefill_step_size: int = 2048,
     specprefill_enabled: bool = False,
@@ -1616,6 +1749,7 @@ def load_model(
         max_tokens: Default max tokens for generation
         force_mllm: Force loading as MLLM even if not auto-detected
         served_model_name: Override model name used in API responses
+        trust_remote_code: Trust model/tokenizer remote code during loading
         mtp: Enable native MTP speculative decoding (SimpleEngine only)
         prefill_step_size: Chunk size for prompt prefill processing (default: 2048)
         specprefill_enabled: Enable SpecPrefill (SimpleEngine only)
@@ -1642,6 +1776,7 @@ def load_model(
         logger.info(f"Loading model with BatchedEngine: {model_name}")
         _engine = BatchedEngine(
             model_name=model_name,
+            trust_remote_code=trust_remote_code,
             scheduler_config=scheduler_config,
             stream_interval=stream_interval,
             force_mllm=force_mllm,
@@ -1654,6 +1789,7 @@ def load_model(
         logger.info(f"Loading model with SimpleEngine: {model_name}")
         _engine = SimpleEngine(
             model_name=model_name,
+            trust_remote_code=trust_remote_code,
             force_mllm=force_mllm,
             mtp=mtp,
             prefill_step_size=prefill_step_size,
@@ -3301,7 +3437,7 @@ async def health_diagnostics() -> DiagnosticsHealthResponse:
     )
 
 
-@app.get("/v1/status")
+@app.get("/v1/status", dependencies=[Depends(verify_api_key)])
 async def status():
     """Real-time status with per-request details for debugging and monitoring."""
     if _engine is None:
@@ -3336,7 +3472,7 @@ async def status():
     }
 
 
-@app.get("/v1/cache/stats")
+@app.get("/v1/cache/stats", dependencies=[Depends(verify_api_key)])
 async def cache_stats():
     """Get cache statistics for debugging and monitoring."""
     try:
@@ -3355,7 +3491,7 @@ async def cache_stats():
         return {"error": "Cache stats not available (mlx_vlm not loaded)"}
 
 
-@app.delete("/v1/cache")
+@app.delete("/v1/cache", dependencies=[Depends(verify_api_key)])
 async def clear_cache():
     """Clear all caches."""
     try:
@@ -3989,12 +4125,11 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
 
     # --- Detailed request logging ---
-    prompt_preview = prompts[0][:200] if prompts else "(empty)"
     prompt_len = sum(len(p) for p in prompts)
     logger.info(
         f"[REQUEST] POST /v1/completions stream={request.stream} "
         f"max_tokens={request.max_tokens} temp={request.temperature} "
-        f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
+        f"prompt_chars={prompt_len} prompts={len(prompts)}"
     )
     effective_repetition_policy, override_accepted = _resolve_repetition_policy(
         requested_override=request.repetition_policy_override,
@@ -4150,12 +4285,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     n_msgs = len(request.messages)
     msg_roles = [m.role for m in request.messages]
     total_chars = 0
-    last_user_preview = ""
     for m in request.messages:
         content = m.content if isinstance(m.content, str) else str(m.content)
         total_chars += len(content)
-        if m.role == "user":
-            last_user_preview = content[:300]
     has_tools = bool(request.tools)
     n_tools = len(request.tools) if request.tools else 0
     resolved_enable_thinking = _resolve_enable_thinking(request)
@@ -4168,7 +4300,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         f"total_chars={total_chars} tools={n_tools} "
         f"response_format={request.response_format}"
     )
-    logger.info(f"[REQUEST] last user message preview: {last_user_preview!r}")
+    _validate_request_media_sources(request.messages)
     visual_input_count = _count_visual_inputs(request.messages)
     diagnostics_level = _resolve_requested_diagnostics_level(
         include_diagnostics=request.include_diagnostics,
@@ -4450,12 +4582,9 @@ async def create_anthropic_message(
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
     total_chars = 0
-    last_user_preview = ""
     for m in anthropic_request.messages:
         content = m.content if isinstance(m.content, str) else str(m.content)
         total_chars += len(content)
-        if m.role == "user":
-            last_user_preview = content[:300]
     sys_chars = len(anthropic_request.system) if anthropic_request.system else 0
     n_tools = len(anthropic_request.tools) if anthropic_request.tools else 0
     logger.info(
@@ -4464,10 +4593,10 @@ async def create_anthropic_message(
         f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
         f"tools={n_tools}"
     )
-    logger.info(f"[REQUEST] last user message preview: {last_user_preview!r}")
 
     # Convert Anthropic request -> OpenAI request
     openai_request = anthropic_to_openai(anthropic_request)
+    _validate_request_media_sources(openai_request.messages)
 
     if anthropic_request.stream:
         return StreamingResponse(

@@ -1556,6 +1556,34 @@ class TestRouteSecurityCoverage:
         dependency_calls = {dep.call for dep in route.dependant.dependencies}
         assert server.verify_api_key in dependency_calls
 
+    def test_status_route_requires_auth(self):
+        """Status route should require API key when auth is enabled."""
+        from fastapi.routing import APIRoute
+
+        import vllm_mlx.server as server
+
+        route = next(
+            r for r in server.app.routes if isinstance(r, APIRoute) and r.path == "/v1/status"
+        )
+        dependency_calls = {dep.call for dep in route.dependant.dependencies}
+        assert server.verify_api_key in dependency_calls
+
+    def test_cache_routes_require_auth(self):
+        """Cache routes should require API key when auth is enabled."""
+        from fastapi.routing import APIRoute
+
+        import vllm_mlx.server as server
+
+        target_paths = {"/v1/cache/stats", "/v1/cache"}
+        found_paths = set()
+        for route in server.app.routes:
+            if isinstance(route, APIRoute) and route.path in target_paths:
+                dependency_calls = {dep.call for dep in route.dependant.dependencies}
+                assert server.verify_api_key in dependency_calls
+                found_paths.add(route.path)
+
+        assert found_paths == target_paths
+
     def test_health_route_is_public(self):
         """Health route should remain unauthenticated for simple liveness checks."""
         from fastapi.routing import APIRoute
@@ -1581,6 +1609,80 @@ class TestRouteSecurityCoverage:
         )
         dependency_calls = {dep.call for dep in route.dependant.dependencies}
         assert server.verify_api_key in dependency_calls
+
+    def test_media_policy_blocks_local_paths_by_default(self):
+        """Server should reject local media paths unless explicitly enabled."""
+        import vllm_mlx.server as server
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": "/tmp/example.png"}},
+                ],
+            }
+        ]
+
+        server._allow_local_media_paths = False
+        with pytest.raises(HTTPException, match="Local media paths are disabled"):
+            server._validate_request_media_sources(messages)
+
+    def test_media_policy_allows_local_paths_when_enabled(self):
+        """Server should allow local media paths when explicitly enabled."""
+        import vllm_mlx.server as server
+
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "video", "video": "/tmp/example.mp4"}],
+            }
+        ]
+
+        server._allow_local_media_paths = True
+        try:
+            server._validate_request_media_sources(messages)
+        finally:
+            server._allow_local_media_paths = False
+
+    def test_media_policy_blocks_private_urls_by_default(self):
+        """Server should reject loopback/private media URLs unless explicitly enabled."""
+        import vllm_mlx.server as server
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "http://127.0.0.1/a.png"}},
+                ],
+            }
+        ]
+
+        server._allow_private_media_hosts = False
+        with pytest.raises(
+            HTTPException,
+            match="Private or loopback media URLs are disabled",
+        ):
+            server._validate_request_media_sources(messages)
+
+    def test_media_policy_allows_private_urls_when_enabled(self):
+        """Server should allow private/loopback media URLs when explicitly enabled."""
+        import vllm_mlx.server as server
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "http://127.0.0.1/a.png"}},
+                ],
+            }
+        ]
+
+        server._allow_private_media_hosts = True
+        try:
+            server._validate_request_media_sources(messages)
+        finally:
+            server._allow_private_media_hosts = False
 
 
 class TestCapabilitiesEndpoint:
