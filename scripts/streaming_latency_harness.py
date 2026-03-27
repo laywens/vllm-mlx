@@ -87,6 +87,7 @@ async def _measure_streaming_latency(
     temperature: float,
     top_p: float,
     request_timeout: float,
+    disable_thinking: bool = False,
 ) -> dict:
     start_time = time.perf_counter()
     first_token_time = None
@@ -101,6 +102,8 @@ async def _measure_streaming_latency(
         "top_p": top_p,
         "stream": True,
     }
+    if disable_thinking:
+        payload["enable_thinking"] = False
 
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         async with client.stream(
@@ -156,6 +159,8 @@ async def _run() -> int:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--request-timeout", type=float, default=120.0)
     parser.add_argument("--health-timeout", type=float, default=120.0)
+    parser.add_argument("--disable-thinking", action="store_true",
+                        help="Send enable_thinking=false in request body")
     parser.add_argument("--json-out")
     args = parser.parse_args()
 
@@ -173,6 +178,7 @@ async def _run() -> int:
                 temperature=args.temperature,
                 top_p=args.top_p,
                 request_timeout=args.request_timeout,
+                disable_thinking=args.disable_thinking,
             )
 
     runs: list[dict] = []
@@ -187,6 +193,7 @@ async def _run() -> int:
                     temperature=args.temperature,
                     top_p=args.top_p,
                     request_timeout=args.request_timeout,
+                    disable_thinking=args.disable_thinking,
                 )
             )
 

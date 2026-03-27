@@ -45,17 +45,21 @@ def _call_chat(
     temperature: float,
     top_p: float,
     timeout: float,
+    disable_thinking: bool = False,
 ) -> dict:
     started = time.perf_counter()
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    if disable_thinking:
+        body["enable_thinking"] = False
     response = requests.post(
         f"{base_url.rstrip('/')}/v1/chat/completions",
-        json={
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-        },
+        json=body,
         timeout=timeout,
     )
     latency_s = time.perf_counter() - started
@@ -115,6 +119,8 @@ def main() -> int:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--request-timeout", type=float, default=180.0)
     parser.add_argument("--health-timeout", type=float, default=120.0)
+    parser.add_argument("--disable-thinking", action="store_true",
+                        help="Send enable_thinking=false in request body")
     parser.add_argument("--json-out")
     args = parser.parse_args()
 
@@ -133,6 +139,7 @@ def main() -> int:
                 temperature=args.temperature,
                 top_p=args.top_p,
                 timeout=args.request_timeout,
+                disable_thinking=args.disable_thinking,
             )
 
     started = time.perf_counter()
@@ -149,6 +156,7 @@ def main() -> int:
                 temperature=args.temperature,
                 top_p=args.top_p,
                 timeout=args.request_timeout,
+                disable_thinking=args.disable_thinking,
             )
             for prompt in prompts
         ]
