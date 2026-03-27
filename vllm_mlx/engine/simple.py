@@ -8,6 +8,8 @@ performance when serving a single user at a time.
 
 import asyncio
 import logging
+from queue import Queue
+from threading import Thread
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -830,11 +832,14 @@ class SimpleEngine(BaseEngine):
             async with self._generation_lock:
                 accumulated_text = ""
                 token_count = 0
+                # Bridge the synchronous mlx-vlm iterator back into async
+                # streaming without buffering the entire generation first.
+                chunk_queue: Queue[Any] = Queue()
+                stream_done = object()
 
-                # Run stream_chat in thread pool since it's synchronous
-                def run_stream():
-                    return list(
-                        self._model.stream_chat(
+                def run_stream() -> None:
+                    try:
+                        for chunk in self._model.stream_chat(
                             messages=messages,
                             max_tokens=max_tokens,
                             temperature=temperature,
@@ -844,12 +849,29 @@ class SimpleEngine(BaseEngine):
                             tool_choice=template_tool_choice,
                             enable_thinking=enable_thinking,
                             **kwargs,
-                        )
-                    )
+                        ):
+                            chunk_queue.put(chunk)
+                    except BaseException as exc:
+                        chunk_queue.put(exc)
+                    finally:
+                        chunk_queue.put(stream_done)
 
-                chunks = await asyncio.to_thread(run_stream)
+                worker = Thread(target=run_stream, daemon=True)
+                worker.start()
 
-                for chunk in chunks:
+                stream_error: BaseException | None = None
+                finished = False
+                while True:
+                    item = await asyncio.to_thread(chunk_queue.get)
+                    if item is stream_done:
+                        break
+                    if isinstance(item, BaseException):
+                        stream_error = item
+                        continue
+                    if finished:
+                        continue
+
+                    chunk = item
                     token_count += 1
                     new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
                     accumulated_text += new_text
@@ -865,8 +887,9 @@ class SimpleEngine(BaseEngine):
                         finish_reason=chunk.finish_reason if finished else None,
                     )
 
-                    if finished:
-                        break
+                await asyncio.to_thread(worker.join)
+                if stream_error is not None:
+                    raise stream_error
             return
 
         prompt = self._build_llm_prompt(

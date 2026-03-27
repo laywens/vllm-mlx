@@ -2,6 +2,8 @@
 """Tests for SimpleEngine concurrency handling."""
 
 import asyncio
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -413,6 +415,44 @@ class TestSimpleEngineToolChoicePassthrough:
             _, kwargs = model.stream_chat.call_args
             assert kwargs["tools"] == tools
             assert kwargs["tool_choice"] == tool_choice
+
+    @pytest.mark.asyncio
+    async def test_mllm_stream_chat_yields_before_sync_generator_finishes(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        per_chunk_delay_s = 0.1
+
+        def stream_chat_side_effect(**kwargs):
+            del kwargs
+            time.sleep(per_chunk_delay_s)
+            yield SimpleNamespace(text="A", prompt_tokens=4, finish_reason=None)
+            time.sleep(per_chunk_delay_s)
+            yield SimpleNamespace(text="B", prompt_tokens=4, finish_reason="stop")
+
+        model = MagicMock()
+        model.stream_chat = MagicMock(side_effect=stream_chat_side_effect)
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=True):
+            engine = SimpleEngine("test-mllm")
+            engine._model = model
+            engine._loaded = True
+
+            outputs = []
+            started = time.perf_counter()
+            first_chunk_elapsed_s = None
+            async for output in engine.stream_chat(
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=16,
+            ):
+                outputs.append(output)
+                if first_chunk_elapsed_s is None:
+                    first_chunk_elapsed_s = time.perf_counter() - started
+
+            total_elapsed_s = time.perf_counter() - started
+
+            assert [output.text for output in outputs] == ["A", "AB"]
+            assert first_chunk_elapsed_s is not None
+            assert total_elapsed_s - first_chunk_elapsed_s >= per_chunk_delay_s * 0.5
 
     @pytest.mark.asyncio
     async def test_llm_chat_does_not_leak_tool_choice_to_model_call(self):
