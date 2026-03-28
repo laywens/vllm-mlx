@@ -14,6 +14,12 @@ cd vllm-mlx
 uv pip install -e .
 ```
 
+For reviewed, CI-like installs from a trusted checkout:
+
+```bash
+uv pip install -c requirements/constraints-ci.txt -e .
+```
+
 ## Install with pip
 
 ```bash
@@ -22,6 +28,8 @@ cd vllm-mlx
 
 pip install -e .
 ```
+
+For the tracked dependency policy used in CI and reviewed contributor environments, see [Dependency Security](../development/dependency-security.md).
 
 ### Optional: Vision Support
 

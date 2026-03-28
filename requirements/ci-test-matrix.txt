@@ -1,0 +1,10 @@
+pytest
+pytest-asyncio
+pytest-cov
+pydantic
+fastapi
+jsonschema
+httpx
+psutil
+transformers
+requests

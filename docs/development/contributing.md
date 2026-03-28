@@ -10,7 +10,8 @@ git clone https://github.com/waybarrios/vllm-mlx.git
 cd vllm-mlx
 
 # Install with dev dependencies
-pip install -e ".[dev]"
+uv pip install -c requirements/constraints-ci.txt -e ".[dev]"
+uv pip install -c requirements/constraints-ci.txt -r requirements/ci-test-matrix.txt
 ```
 
 ## Development Workflow
@@ -38,6 +39,14 @@ isort vllm_mlx/
 # Type checking
 mypy vllm_mlx/
 ```
+
+## Dependency Safety
+
+Use the tracked CI requirements when you want a reviewed, reproducible toolchain instead of a floating latest install.
+
+- Dependency policy and upstream-sync checklist: [Dependency Security](dependency-security.md)
+- CI requirement sets live under `requirements/`
+- Dependency version policy lives in `requirements/constraints-ci.txt`
 
 ### Running Benchmarks
 
