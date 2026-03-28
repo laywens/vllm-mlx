@@ -22,7 +22,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install -r requirements/ci-lint.txt
+          python -m pip install \
+            --require-hashes \
+            --only-binary=:all: \
+            -r requirements/locks/ci-lint.txt
 
       - name: Run ruff
         run: ruff check vllm_mlx/ tests/ --select E,F,W --ignore E402,E501,E731,F811,F841
@@ -43,8 +46,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install \
-            -c requirements/constraints-ci.txt \
-            -r requirements/ci-typecheck.txt
+            --require-hashes \
+            --only-binary=:all: \
+            -r requirements/locks/ci-typecheck.txt
 
       - name: Run mypy
         run: mypy vllm_mlx/ --ignore-missing-imports --no-error-summary
@@ -66,8 +70,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install \
-            -c requirements/constraints-ci.txt \
-            -r requirements/ci-test-matrix.txt
+            --require-hashes \
+            --only-binary=:all: \
+            -r requirements/locks/ci-test-matrix.txt
 
       - name: Run unit tests (no MLX required)
         run: |
@@ -116,11 +121,10 @@ jobs:
       - name: Install project and dependencies
         run: |
           python -m pip install \
-            -c requirements/constraints-ci.txt \
-            -e ".[vision]"
-          python -m pip install \
-            -c requirements/constraints-ci.txt \
-            -r requirements/ci-test-matrix.txt
+            --require-hashes \
+            --only-binary=:all: \
+            -r requirements/locks/local-verify-vision.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Verify Apple Silicon
         run: |

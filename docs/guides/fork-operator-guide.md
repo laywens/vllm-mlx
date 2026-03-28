@@ -26,6 +26,10 @@ uv tool install --upgrade git+https://github.com/swaylenhayes/vllm-mlx.git
 
 This gives you a global `vllm-mlx` command.
 
+Do not use this Git URL install path for CI or release automation. Trusted
+automation paths should start from a checked-out repository and the tracked
+lockfiles under `requirements/locks/`.
+
 ### B. Patched checkout
 
 Use this when testing local fixes that are not yet published, or when the

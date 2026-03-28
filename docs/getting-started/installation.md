@@ -14,10 +14,12 @@ cd vllm-mlx
 uv pip install -e .
 ```
 
-For reviewed, CI-like installs from a trusted checkout:
+For the reviewed Apple Silicon verification environment used by CI
+(`python 3.11` on `arm64`) from a trusted checkout:
 
 ```bash
-uv pip install -c requirements/constraints-ci.txt -e .
+uv pip install --require-hashes --only-binary=:all: -r requirements/locks/local-verify-vision.txt
+uv pip install --no-deps --no-build-isolation -e .
 ```
 
 ## Install with pip
