@@ -321,6 +321,7 @@ async def test_create_chat_completion_forwards_enable_thinking_to_engine(
     monkeypatch.setattr(server, "_record_repetition_intervention", lambda **kwargs: None)
     monkeypatch.setattr(server, "_reasoning_parser", None)
     monkeypatch.setattr(server, "_strict_model_id", False)
+    monkeypatch.setattr(server, "_model_name", "test-model")
 
     request = server.ChatCompletionRequest(
         model="test-model",
@@ -365,6 +366,7 @@ async def test_create_chat_completion_defaults_structured_output_to_non_thinking
     monkeypatch.setattr(server, "_record_repetition_intervention", lambda **kwargs: None)
     monkeypatch.setattr(server, "_reasoning_parser", None)
     monkeypatch.setattr(server, "_strict_model_id", False)
+    monkeypatch.setattr(server, "_model_name", "test-model")
 
     request = server.ChatCompletionRequest(
         model="test-model",
@@ -409,6 +411,7 @@ async def test_create_chat_completion_leaves_plain_chat_thinking_unset_when_omit
     monkeypatch.setattr(server, "_record_repetition_intervention", lambda **kwargs: None)
     monkeypatch.setattr(server, "_reasoning_parser", None)
     monkeypatch.setattr(server, "_strict_model_id", False)
+    monkeypatch.setattr(server, "_model_name", "test-model")
 
     request = server.ChatCompletionRequest(
         model="test-model",
@@ -421,3 +424,47 @@ async def test_create_chat_completion_leaves_plain_chat_thinking_unset_when_omit
 
     _, chat_kwargs = engine.chat.call_args
     assert "enable_thinking" not in chat_kwargs
+
+
+@pytest.mark.asyncio
+async def test_create_chat_completion_defaults_deterministic_plain_chat_to_non_thinking(
+    monkeypatch,
+):
+    import vllm_mlx.server as server
+
+    engine = SimpleNamespace(
+        is_mllm=False,
+        preserve_native_tool_format=False,
+        chat=AsyncMock(
+            return_value=SimpleNamespace(
+                text="ok",
+                prompt_tokens=4,
+                completion_tokens=1,
+                finish_reason="stop",
+            )
+        ),
+    )
+
+    async def _await_result(result, raw_request, timeout):
+        del raw_request, timeout
+        return await result
+
+    monkeypatch.setattr(server, "get_engine", lambda: engine)
+    monkeypatch.setattr(server, "_wait_with_disconnect", _await_result)
+    monkeypatch.setattr(server, "_record_repetition_intervention", lambda **kwargs: None)
+    monkeypatch.setattr(server, "_reasoning_parser", None)
+    monkeypatch.setattr(server, "_strict_model_id", False)
+    monkeypatch.setattr(server, "_deterministic_mode", True)
+    monkeypatch.setattr(server, "_model_name", "test-model")
+
+    request = server.ChatCompletionRequest(
+        model="test-model",
+        messages=[server.Message(role="user", content="Hello")],
+        max_tokens=8,
+    )
+    raw_request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+
+    await server.create_chat_completion(request, raw_request)
+
+    _, chat_kwargs = engine.chat.call_args
+    assert chat_kwargs["enable_thinking"] is False

@@ -820,11 +820,14 @@ def _resolve_enable_thinking(request: ChatCompletionRequest) -> bool | None:
     Policy:
     - explicit request value always wins
     - structured output defaults to non-thinking when omitted
-    - plain chat keeps model/template defaults when omitted
+    - deterministic mode defaults to non-thinking when omitted
+    - plain chat otherwise keeps model/template defaults when omitted
     """
     if request.enable_thinking is not None:
         return request.enable_thinking
     if request.response_format is not None:
+        return False
+    if _deterministic_mode:
         return False
     return None
 
