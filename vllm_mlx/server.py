@@ -129,6 +129,7 @@ from .api.utils import (
     extract_multimodal_content,
     is_mllm_model,  # noqa: F401
 )
+from .defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
 from .engine import BaseEngine, BatchedEngine, GenerationOutput, SimpleEngine
 from .runtime_mode import save_observed_peak_concurrency
 from .tool_parsers import ToolParserManager
@@ -153,6 +154,8 @@ _bind_host: str = "0.0.0.0"  # Effective bind host used for trust policy checks
 _trust_requests_when_auth_disabled: bool = False
 _allow_local_media_paths: bool = False
 _allow_private_media_hosts: bool = False
+_benchmark_disable_request_logging: bool = False
+_benchmark_disable_local_disconnect_guard: bool = False
 _repetition_policy: str = "safe"  # safe | strict
 _repetition_override_policy: str = "trusted_only"  # trusted_only | disabled
 
@@ -557,6 +560,15 @@ def _is_request_client_loopback(request: Request) -> bool:
         return ipaddress.ip_address(client_host).is_loopback
     except ValueError:
         return client_host.lower() == "localhost"
+
+
+def _should_bypass_local_disconnect_guard(request: Request) -> bool:
+    """Allow benchmark runs to skip disconnect polling for loopback traffic."""
+    return (
+        _benchmark_disable_local_disconnect_guard
+        and _is_loopback_host(_bind_host)
+        and _is_request_client_loopback(request)
+    )
 
 
 def _is_trusted_request(request: Request) -> bool:
@@ -1736,6 +1748,12 @@ def load_model(
     trust_remote_code: bool = False,
     mtp: bool = False,
     prefill_step_size: int = 2048,
+    use_prefill_executor: bool = True,
+    clear_finished_output_cache: bool = True,
+    finished_output_cache_clear_interval: int = (
+        DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
+    ),
+    log_finished_output_cache_clear: bool = False,
     specprefill_enabled: bool = False,
     specprefill_threshold: int = 8192,
     specprefill_keep_pct: float = 0.3,
@@ -1755,6 +1773,10 @@ def load_model(
         trust_remote_code: Trust model/tokenizer remote code during loading
         mtp: Enable native MTP speculative decoding (SimpleEngine only)
         prefill_step_size: Chunk size for prompt prefill processing (default: 2048)
+        use_prefill_executor: Run likely-prefill batched steps in executor
+        clear_finished_output_cache: Clear MLX cache after finished batched outputs
+        finished_output_cache_clear_interval: Clear after every N finished-output events
+        log_finished_output_cache_clear: Log timing for finished-output cache clears
         specprefill_enabled: Enable SpecPrefill (SimpleEngine only)
         specprefill_threshold: Minimum suffix tokens to trigger SpecPrefill (default: 8192)
         specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
@@ -1783,6 +1805,12 @@ def load_model(
             scheduler_config=scheduler_config,
             stream_interval=stream_interval,
             force_mllm=force_mllm,
+            use_prefill_executor=use_prefill_executor,
+            clear_finished_output_cache=clear_finished_output_cache,
+            finished_output_cache_clear_interval=(
+                finished_output_cache_clear_interval
+            ),
+            log_finished_output_cache_clear=log_finished_output_cache_clear,
         )
         # BatchedEngine will be started in lifespan (uvicorn's event loop)
         # Just log for now
@@ -4035,6 +4063,16 @@ async def _disconnect_guard(
         )
 
 
+def _wrap_stream_with_optional_disconnect_guard(
+    generator: AsyncIterator[str],
+    raw_request: Request,
+) -> AsyncIterator[str]:
+    """Skip disconnect polling only for explicit localhost benchmark runs."""
+    if _should_bypass_local_disconnect_guard(raw_request):
+        return generator
+    return _disconnect_guard(generator, raw_request)
+
+
 async def _wait_with_disconnect(
     coro,
     raw_request: Request,
@@ -4052,6 +4090,20 @@ async def _wait_with_disconnect(
     _t0 = _time.monotonic()
 
     task = asyncio.ensure_future(coro)
+
+    if _should_bypass_local_disconnect_guard(raw_request):
+        try:
+            return await asyncio.wait_for(task, timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise HTTPException(
+                status_code=504,
+                detail=f"Request timed out after {timeout:.1f} seconds",
+            ) from exc
 
     async def _wait_disconnect():
         poll_count = 0
@@ -4129,11 +4181,12 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
     # --- Detailed request logging ---
     prompt_len = sum(len(p) for p in prompts)
-    logger.info(
-        f"[REQUEST] POST /v1/completions stream={request.stream} "
-        f"max_tokens={request.max_tokens} temp={request.temperature} "
-        f"prompt_chars={prompt_len} prompts={len(prompts)}"
-    )
+    if not _benchmark_disable_request_logging:
+        logger.info(
+            f"[REQUEST] POST /v1/completions stream={request.stream} "
+            f"max_tokens={request.max_tokens} temp={request.temperature} "
+            f"prompt_chars={prompt_len} prompts={len(prompts)}"
+        )
     effective_repetition_policy, override_accepted = _resolve_repetition_policy(
         requested_override=request.repetition_policy_override,
         request=raw_request,
@@ -4148,7 +4201,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
     if request.stream:
         return StreamingResponse(
-            _disconnect_guard(
+            _wrap_stream_with_optional_disconnect_guard(
                 stream_completion(
                     engine,
                     prompts[0],
@@ -4294,15 +4347,16 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     has_tools = bool(request.tools)
     n_tools = len(request.tools) if request.tools else 0
     resolved_enable_thinking = _resolve_enable_thinking(request)
-    logger.info(
-        f"[REQUEST] POST /v1/chat/completions stream={request.stream} "
-        f"model={request.model!r} max_tokens={request.max_tokens} "
-        f"temp={request.temperature} enable_thinking={request.enable_thinking} "
-        f"resolved_enable_thinking={resolved_enable_thinking} "
-        f"msgs={n_msgs} roles={msg_roles} "
-        f"total_chars={total_chars} tools={n_tools} "
-        f"response_format={request.response_format}"
-    )
+    if not _benchmark_disable_request_logging:
+        logger.info(
+            f"[REQUEST] POST /v1/chat/completions stream={request.stream} "
+            f"model={request.model!r} max_tokens={request.max_tokens} "
+            f"temp={request.temperature} enable_thinking={request.enable_thinking} "
+            f"resolved_enable_thinking={resolved_enable_thinking} "
+            f"msgs={n_msgs} roles={msg_roles} "
+            f"total_chars={total_chars} tools={n_tools} "
+            f"response_format={request.response_format}"
+        )
     _validate_request_media_sources(request.messages)
     visual_input_count = _count_visual_inputs(request.messages)
     diagnostics_level = _resolve_requested_diagnostics_level(
@@ -4414,7 +4468,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     if request.stream:
         return StreamingResponse(
-            _disconnect_guard(
+            _wrap_stream_with_optional_disconnect_guard(
                 stream_chat_completion(
                     engine,
                     messages,
@@ -4590,12 +4644,13 @@ async def create_anthropic_message(
         total_chars += len(content)
     sys_chars = len(anthropic_request.system) if anthropic_request.system else 0
     n_tools = len(anthropic_request.tools) if anthropic_request.tools else 0
-    logger.info(
-        f"[REQUEST] POST /v1/messages (anthropic) stream={anthropic_request.stream} "
-        f"model={anthropic_request.model!r} max_tokens={anthropic_request.max_tokens} "
-        f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
-        f"tools={n_tools}"
-    )
+    if not _benchmark_disable_request_logging:
+        logger.info(
+            f"[REQUEST] POST /v1/messages (anthropic) stream={anthropic_request.stream} "
+            f"model={anthropic_request.model!r} max_tokens={anthropic_request.max_tokens} "
+            f"msgs={n_msgs} total_chars={total_chars} system_chars={sys_chars} "
+            f"tools={n_tools}"
+        )
 
     # Convert Anthropic request -> OpenAI request
     openai_request = anthropic_to_openai(anthropic_request)
@@ -4603,7 +4658,7 @@ async def create_anthropic_message(
 
     if anthropic_request.stream:
         return StreamingResponse(
-            _disconnect_guard(
+            _wrap_stream_with_optional_disconnect_guard(
                 _stream_anthropic_messages(engine, openai_request, anthropic_request),
                 request,
             ),

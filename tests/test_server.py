@@ -1105,6 +1105,43 @@ class TestHelperFunctions:
         assert effective_mode == "strict"
         assert override_accepted is True
 
+    def test_benchmark_disconnect_bypass_requires_explicit_loopback(self, monkeypatch):
+        import types
+
+        import vllm_mlx.server as server
+
+        monkeypatch.setattr(server, "_benchmark_disable_local_disconnect_guard", True)
+        monkeypatch.setattr(server, "_bind_host", "127.0.0.1")
+
+        loopback_request = types.SimpleNamespace(
+            client=types.SimpleNamespace(host="127.0.0.1")
+        )
+        remote_request = types.SimpleNamespace(
+            client=types.SimpleNamespace(host="198.51.100.24")
+        )
+
+        assert server._should_bypass_local_disconnect_guard(loopback_request) is True
+        assert server._should_bypass_local_disconnect_guard(remote_request) is False
+
+    @pytest.mark.asyncio
+    async def test_wait_with_disconnect_bypasses_poller_for_local_benchmark(
+        self, monkeypatch
+    ):
+        import types
+
+        import vllm_mlx.server as server
+
+        monkeypatch.setattr(server, "_benchmark_disable_local_disconnect_guard", True)
+        monkeypatch.setattr(server, "_bind_host", "127.0.0.1")
+
+        async def _complete():
+            return "ok"
+
+        request = types.SimpleNamespace(client=types.SimpleNamespace(host="127.0.0.1"))
+        result = await server._wait_with_disconnect(_complete(), request, timeout=1.0)
+
+        assert result == "ok"
+
 
 # =============================================================================
 # Security and Reliability Tests (PR #4)

@@ -16,6 +16,8 @@ import argparse
 import sys
 from dataclasses import dataclass
 
+from .defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
+
 
 @dataclass(frozen=True)
 class CacheProfile:
@@ -39,6 +41,32 @@ class DeterministicProfile:
     serialize_tracked_routes: bool
 
 
+@dataclass(frozen=True)
+class BenchmarkProfile:
+    """Resolved benchmark-only toggles for hot-path diagnostics."""
+
+    disable_request_logging: bool
+    disable_local_disconnect_guard: bool
+    disable_prefill_executor: bool
+    disable_finished_output_cache_clear: bool
+    finished_output_cache_clear_interval: int
+    log_finished_output_cache_clear: bool
+
+    @property
+    def enabled(self) -> bool:
+        return any(
+            (
+                self.disable_request_logging,
+                self.disable_local_disconnect_guard,
+                self.disable_prefill_executor,
+                self.disable_finished_output_cache_clear,
+                self.finished_output_cache_clear_interval
+                != DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL,
+                self.log_finished_output_cache_clear,
+            )
+        )
+
+
 def _resolve_bind_host(host: str, localhost: bool) -> str:
     """Resolve bind host with localhost profile precedence."""
     return "127.0.0.1" if localhost else host
@@ -60,6 +88,7 @@ def _build_startup_diagnostics(
     allow_private_media_hosts: bool = False,
     cache_profile: CacheProfile | None = None,
     deterministic_profile: DeterministicProfile | None = None,
+    benchmark_profile: BenchmarkProfile | None = None,
 ) -> list[str]:
     """Build operator-facing startup diagnostics for risky local configurations."""
     diagnostics: list[str] = []
@@ -131,6 +160,39 @@ def _build_startup_diagnostics(
         diagnostics.append(
             "INFO: Deterministic profile is for reproducibility diagnostics; expect lower throughput under load."
         )
+    if benchmark_profile is not None and benchmark_profile.enabled:
+        diagnostics.append(
+            "INFO: Benchmark profile enabled: default safety and observability remain unchanged unless explicitly toggled."
+        )
+        if benchmark_profile.disable_request_logging:
+            diagnostics.append(
+                "INFO: Benchmark profile: request-level hot-path logging disabled."
+            )
+        if benchmark_profile.disable_local_disconnect_guard:
+            diagnostics.append(
+                "INFO: Benchmark profile: localhost disconnect polling bypassed."
+            )
+        if benchmark_profile.disable_prefill_executor:
+            diagnostics.append(
+                "INFO: Benchmark profile: prefill executor disabled; scheduler steps stay on the event loop."
+            )
+        if benchmark_profile.disable_finished_output_cache_clear:
+            diagnostics.append(
+                "INFO: Benchmark profile: finished-request cache clears disabled."
+            )
+        elif (
+            benchmark_profile.finished_output_cache_clear_interval
+            != DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
+        ):
+            diagnostics.append(
+                "INFO: Benchmark profile: finished-request cache clears cadenced "
+                f"every {benchmark_profile.finished_output_cache_clear_interval} "
+                "finished-output events."
+            )
+        if benchmark_profile.log_finished_output_cache_clear:
+            diagnostics.append(
+                "INFO: Benchmark profile: finished-request cache clear timing logged."
+            )
 
     return diagnostics
 
@@ -229,6 +291,24 @@ def _resolve_deterministic_profile(
     )
 
 
+def _resolve_benchmark_profile(args) -> BenchmarkProfile:
+    """Resolve benchmark-only toggles from CLI flags."""
+    return BenchmarkProfile(
+        disable_request_logging=args.benchmark_disable_request_logging,
+        disable_local_disconnect_guard=args.benchmark_disable_local_disconnect_guard,
+        disable_prefill_executor=args.benchmark_disable_prefill_executor,
+        disable_finished_output_cache_clear=(
+            args.benchmark_disable_finished_output_cache_clear
+        ),
+        finished_output_cache_clear_interval=(
+            args.benchmark_finished_output_cache_clear_interval
+        ),
+        log_finished_output_cache_clear=(
+            args.benchmark_log_finished_output_cache_clear
+        ),
+    )
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -283,6 +363,9 @@ def serve_command(args):
     if args.batch_divergence_threshold <= 0 or args.batch_divergence_threshold > 1:
         print("Error: --batch-divergence-threshold must be in (0, 1]")
         sys.exit(1)
+    if args.benchmark_finished_output_cache_clear_interval < 1:
+        print("Error: --benchmark-finished-output-cache-clear-interval must be >= 1")
+        sys.exit(1)
 
     # Configure server security settings
     server._api_key = args.api_key
@@ -314,6 +397,13 @@ def serve_command(args):
     server._deterministic_mode = False
     server._deterministic_serialize = False
     server._strict_model_id = args.strict_model_id
+    benchmark_profile = _resolve_benchmark_profile(args)
+    server._benchmark_disable_request_logging = (
+        benchmark_profile.disable_request_logging
+    )
+    server._benchmark_disable_local_disconnect_guard = (
+        benchmark_profile.disable_local_disconnect_guard
+    )
 
     # Configure reasoning parser
     if args.reasoning_parser:
@@ -564,6 +654,7 @@ def serve_command(args):
         allow_private_media_hosts=args.allow_private_media_hosts,
         cache_profile=cache_profile if use_batching else None,
         deterministic_profile=deterministic_profile,
+        benchmark_profile=benchmark_profile,
     )
     for diagnostic in diagnostics:
         print(f"  {diagnostic}")
@@ -584,6 +675,16 @@ def serve_command(args):
         trust_remote_code=args.trust_remote_code,
         mtp=args.enable_mtp,
         prefill_step_size=args.prefill_step_size,
+        use_prefill_executor=not benchmark_profile.disable_prefill_executor,
+        clear_finished_output_cache=(
+            not benchmark_profile.disable_finished_output_cache_clear
+        ),
+        finished_output_cache_clear_interval=(
+            benchmark_profile.finished_output_cache_clear_interval
+        ),
+        log_finished_output_cache_clear=(
+            benchmark_profile.log_finished_output_cache_clear
+        ),
         specprefill_enabled=args.specprefill,
         specprefill_threshold=args.specprefill_threshold,
         specprefill_keep_pct=args.specprefill_keep_pct,
@@ -1140,6 +1241,55 @@ Examples:
             "Enable reproducibility profile: force simple runtime, "
             "greedy sampling (temperature=0, top_p=1), and serialize tracked "
             "inference routes."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-disable-request-logging",
+        action="store_true",
+        help=(
+            "Benchmark-only: disable per-request info logs on completion/chat "
+            "endpoints without changing default production behavior."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-disable-local-disconnect-guard",
+        action="store_true",
+        help=(
+            "Benchmark-only: bypass disconnect polling for loopback clients on "
+            "localhost binds."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-disable-prefill-executor",
+        action="store_true",
+        help=(
+            "Benchmark-only: keep batched prefill scheduler steps on the event "
+            "loop instead of the single-thread executor."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-disable-finished-output-cache-clear",
+        action="store_true",
+        help=(
+            "Benchmark-only: skip unconditional mlx cache clears after finished "
+            "batched requests."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-finished-output-cache-clear-interval",
+        type=int,
+        default=DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL,
+        help=(
+            "Benchmark-only: clear MLX cache after every N finished-output "
+            "events instead of the production default "
+            f"({DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL})."
+        ),
+    )
+    serve_parser.add_argument(
+        "--benchmark-log-finished-output-cache-clear",
+        action="store_true",
+        help=(
+            "Benchmark-only: log timing for finished-output MLX cache clears."
         ),
     )
     serve_parser.add_argument(

@@ -20,8 +20,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 import mlx.core as mx
 
+from .defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
 from .request import Request, RequestOutput, SamplingParams
-from .scheduler import Scheduler, SchedulerConfig
+from .scheduler import (
+    Scheduler,
+    SchedulerConfig,
+    _get_batch_generator_active_batch,
+)
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .model_registry import get_registry
 
@@ -36,6 +41,12 @@ class EngineConfig:
     scheduler_config: Optional[SchedulerConfig] = None
     step_interval: float = 0.001  # 1ms between steps
     stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
+    use_prefill_executor: bool = True
+    clear_finished_output_cache: bool = True
+    finished_output_cache_clear_interval: int = (
+        DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
+    )
+    log_finished_output_cache_clear: bool = False
 
 
 class EngineCore:
@@ -101,6 +112,10 @@ class EngineCore:
         self._task: Optional[asyncio.Task] = None
         self._start_time: Optional[float] = None
         self._steps_executed = 0
+        self._scheduler_step_affinity: Optional[str] = None
+        self._scheduler_step_affinity_batch_generator_id: Optional[int] = None
+        self._finished_output_cache_clear_events = 0
+        self._finished_output_cache_clear_skips = 0
 
         logger.debug(f"Engine {self._engine_id} initialized")
 
@@ -130,13 +145,130 @@ class EngineCore:
         """Check if engine is running."""
         return self._running
 
-    async def _engine_loop(self) -> None:
-        """Main engine loop - hybrid executor for prefill vs generation.
+    def _clear_scheduler_step_affinity(self) -> None:
+        """Clear any sticky scheduler-step execution mode."""
+        self._scheduler_step_affinity = None
+        self._scheduler_step_affinity_batch_generator_id = None
 
-        Prefill steps (long prompts) are run in a thread executor to keep
-        the asyncio event loop responsive.  Generation-only steps (~1-3ms)
-        are called directly to avoid ~0.5-2ms context switch overhead,
-        giving ~5-10% throughput improvement during sustained generation.
+    @staticmethod
+    def _batch_has_entries(batch: Any) -> bool:
+        """Return True when a batch-like object still holds live sequences."""
+        if batch is None:
+            return False
+        try:
+            return len(batch) > 0
+        except TypeError:
+            uids = getattr(batch, "uids", None)
+            return bool(uids)
+
+    def _should_keep_scheduler_step_affinity(self) -> bool:
+        """Check whether the current BatchGenerator still needs thread affinity."""
+        if self._scheduler_step_affinity != "executor":
+            return False
+
+        batch_generator = self.scheduler.batch_generator
+        if batch_generator is None:
+            return False
+
+        if (
+            self._scheduler_step_affinity_batch_generator_id is not None
+            and id(batch_generator) != self._scheduler_step_affinity_batch_generator_id
+        ):
+            return False
+
+        if self.scheduler.get_num_waiting() > 0 or self.scheduler.get_num_running() > 0:
+            return True
+
+        if getattr(batch_generator, "_partial", None) is not None:
+            return True
+
+        active_batch = _get_batch_generator_active_batch(batch_generator)
+        return self._batch_has_entries(active_batch)
+
+    def _should_run_scheduler_step_in_executor(self) -> bool:
+        """Select a thread-stable execution mode for the next scheduler step."""
+        if not self.config.use_prefill_executor:
+            self._clear_scheduler_step_affinity()
+            return False
+
+        if self._should_keep_scheduler_step_affinity():
+            return True
+
+        self._clear_scheduler_step_affinity()
+
+        batch_generator = self.scheduler.batch_generator
+        has_waiting = self.scheduler.get_num_waiting() > 0
+        has_partial = (
+            batch_generator is not None
+            and getattr(batch_generator, "_partial", None) is not None
+        )
+        return has_waiting or has_partial
+
+    def _record_scheduler_step_execution(self, *, used_executor: bool) -> None:
+        """Persist or release sticky execution mode after a scheduler step."""
+        if not self.config.use_prefill_executor:
+            self._clear_scheduler_step_affinity()
+            return
+
+        batch_generator = self.scheduler.batch_generator
+        if (
+            used_executor
+            and batch_generator is not None
+            and (
+                self.scheduler.get_num_running() > 0
+                or getattr(batch_generator, "_partial", None) is not None
+                or self._batch_has_entries(
+                    _get_batch_generator_active_batch(batch_generator)
+                )
+            )
+        ):
+            # mlx-lm 0.31.3+ binds generation state to the thread that last
+            # advanced the batch. Keep using the executor until the batch drains.
+            self._scheduler_step_affinity = "executor"
+            self._scheduler_step_affinity_batch_generator_id = id(batch_generator)
+            return
+
+        if not self._should_keep_scheduler_step_affinity():
+            self._clear_scheduler_step_affinity()
+
+    def _maybe_clear_finished_output_cache(self, finished_request_ids: List[str]) -> bool:
+        """Clear MLX cache for finished outputs when the configured cadence is due."""
+        if not self.config.clear_finished_output_cache or not finished_request_ids:
+            return False
+
+        self._finished_output_cache_clear_events = (
+            getattr(self, "_finished_output_cache_clear_events", 0) + 1
+        )
+        interval = max(
+            1, int(getattr(self.config, "finished_output_cache_clear_interval", 1))
+        )
+        if self._finished_output_cache_clear_events % interval != 0:
+            self._finished_output_cache_clear_skips = (
+                getattr(self, "_finished_output_cache_clear_skips", 0) + 1
+            )
+            return False
+
+        start = time.perf_counter()
+        mx.clear_cache()
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if self.config.log_finished_output_cache_clear:
+            logger.info(
+                "[finished_output_cache_clear] cleared "
+                f"finished_requests={len(finished_request_ids)} "
+                f"elapsed_ms={elapsed_ms:.3f} "
+                f"interval={interval} "
+                f"events={self._finished_output_cache_clear_events} "
+                f"skips={getattr(self, '_finished_output_cache_clear_skips', 0)}"
+            )
+        return True
+
+    async def _engine_loop(self) -> None:
+        """Main engine loop with thread-stable batched scheduler stepping.
+
+        Prefill-capable steps still start in the single-thread executor to keep
+        the event loop responsive. Once a BatchGenerator is advanced there, we
+        keep that generator on the same execution context until it drains because
+        mlx-lm 0.31.3+ stores generation-stream state with thread affinity.
         """
         import concurrent.futures
 
@@ -170,17 +302,7 @@ class EngineCore:
         while self._running:
             try:
                 if self.scheduler.has_requests():
-                    # Hybrid approach: use executor only when prefill is likely.
-                    # Prefill happens when there are waiting requests that need
-                    # to be inserted into the batch (may block for seconds).
-                    # Generation-only steps are fast (<3ms) and can run inline.
-                    has_waiting = self.scheduler.get_num_waiting() > 0
-                    has_partial = (
-                        self.scheduler.batch_generator is not None
-                        and getattr(self.scheduler.batch_generator, "_partial", None)
-                        is not None
-                    )
-                    needs_executor = has_waiting or has_partial
+                    needs_executor = self._should_run_scheduler_step_in_executor()
 
                     if needs_executor:
                         output = await loop.run_in_executor(
@@ -190,6 +312,9 @@ class EngineCore:
                         output = self.scheduler.step()
                         # Yield to event loop after inline step
                         await asyncio.sleep(0)
+                    self._record_scheduler_step_execution(
+                        used_executor=needs_executor
+                    )
                     self._steps_executed += 1
 
                     # Emergency memory pressure check
@@ -236,8 +361,9 @@ class EngineCore:
                                     event.set()
 
                         # Free Metal buffers after distributing finished outputs
-                        if output.finished_request_ids:
-                            mx.clear_cache()
+                        self._maybe_clear_finished_output_cache(
+                            output.finished_request_ids
+                        )
 
                         # Always yield to prevent event loop starvation.
                         # Without this, orphaned requests (client disconnected but

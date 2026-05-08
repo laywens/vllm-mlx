@@ -7,6 +7,7 @@ for the vLLM-style continuous batching implementation.
 """
 
 import asyncio
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock
 
@@ -107,6 +108,220 @@ class TestRequest:
         assert req1 < req2
         # Same priority, earlier arrival = higher priority
         assert req1 < req3
+
+
+class TestSchedulerBatchGeneratorCompatibility:
+    """Tests for mlx-lm BatchGenerator compatibility shims."""
+
+    def test_scheduler_attaches_prefill_progress_callback_when_ctor_lacks_kwarg(
+        self, monkeypatch
+    ):
+        import vllm_mlx.scheduler as scheduler_module
+
+        captured_kwargs = {}
+
+        class FakeBatchGenerator:
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        class TokenizerStub:
+            eos_token_id = 2
+            eos_token_ids = None
+
+        monkeypatch.setattr(
+            scheduler_module,
+            "_BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK",
+            False,
+        )
+        monkeypatch.setattr(scheduler_module, "BatchGenerator", FakeBatchGenerator)
+        monkeypatch.setattr(scheduler_module, "make_sampler", lambda **kwargs: "sampler")
+
+        scheduler = scheduler_module.Scheduler(
+            model=MagicMock(),
+            tokenizer=TokenizerStub(),
+            config=scheduler_module.SchedulerConfig(enable_prefix_cache=False),
+        )
+
+        batch_generator = scheduler._create_batch_generator(
+            SamplingParams(max_tokens=32)
+        )
+
+        assert "prompt_progress_callback" not in captured_kwargs
+        assert callable(batch_generator.prompt_progress_callback)
+
+    def test_extract_generation_responses_handles_tuple_shape(self):
+        import vllm_mlx.scheduler as scheduler_module
+
+        generated = [object(), object()]
+
+        assert scheduler_module._extract_generation_responses((["prompt"], generated)) == generated
+        assert scheduler_module._extract_generation_responses(generated) == generated
+
+    def test_get_batch_generator_active_batch_falls_back_to_generation_batch(self):
+        import types
+
+        import vllm_mlx.scheduler as scheduler_module
+
+        generation_batch = object()
+        batch_generator = types.SimpleNamespace(
+            active_batch=None,
+            _generation_batch=generation_batch,
+        )
+
+        assert (
+            scheduler_module._get_batch_generator_active_batch(batch_generator)
+            is generation_batch
+        )
+
+
+class TestEngineExecutorAffinity:
+    """Tests for thread-stable scheduler stepping in EngineCore."""
+
+    @staticmethod
+    def _make_engine(*, use_prefill_executor=True, waiting=0, running=0, batch_generator=None):
+        from vllm_mlx.engine_core import EngineConfig, EngineCore
+
+        engine = EngineCore.__new__(EngineCore)
+        engine.config = EngineConfig(use_prefill_executor=use_prefill_executor)
+        engine.scheduler = SimpleNamespace(
+            batch_generator=batch_generator,
+            get_num_waiting=lambda: waiting,
+            get_num_running=lambda: running,
+        )
+        engine._scheduler_step_affinity = None
+        engine._scheduler_step_affinity_batch_generator_id = None
+        return engine
+
+    def test_scheduler_step_uses_executor_for_waiting_prefill(self):
+        engine = self._make_engine(waiting=1)
+
+        assert engine._should_run_scheduler_step_in_executor() is True
+
+    def test_scheduler_step_affinity_sticks_until_batch_drains(self):
+        batch_generator = SimpleNamespace(
+            _partial=None,
+            active_batch=None,
+            _generation_batch=SimpleNamespace(uids=[1]),
+        )
+        engine = self._make_engine(running=1, batch_generator=batch_generator)
+
+        engine._record_scheduler_step_execution(used_executor=True)
+
+        assert engine._should_run_scheduler_step_in_executor() is True
+        assert engine._scheduler_step_affinity == "executor"
+        assert (
+            engine._scheduler_step_affinity_batch_generator_id
+            == id(batch_generator)
+        )
+
+    def test_scheduler_step_affinity_releases_after_idle_drain(self):
+        generation_batch = SimpleNamespace(uids=[1])
+        batch_generator = SimpleNamespace(
+            _partial=None,
+            active_batch=None,
+            _generation_batch=generation_batch,
+        )
+        engine = self._make_engine(running=1, batch_generator=batch_generator)
+
+        engine._record_scheduler_step_execution(used_executor=True)
+
+        engine.scheduler = SimpleNamespace(
+            batch_generator=batch_generator,
+            get_num_waiting=lambda: 0,
+            get_num_running=lambda: 0,
+        )
+        generation_batch.uids = []
+
+        assert engine._should_run_scheduler_step_in_executor() is False
+        assert engine._scheduler_step_affinity is None
+        assert engine._scheduler_step_affinity_batch_generator_id is None
+
+    def test_scheduler_step_affinity_resets_when_executor_disabled(self):
+        batch_generator = SimpleNamespace(
+            _partial=None,
+            active_batch=None,
+            _generation_batch=SimpleNamespace(uids=[1]),
+        )
+        engine = self._make_engine(
+            use_prefill_executor=False,
+            running=1,
+            batch_generator=batch_generator,
+        )
+        engine._scheduler_step_affinity = "executor"
+        engine._scheduler_step_affinity_batch_generator_id = id(batch_generator)
+
+        assert engine._should_run_scheduler_step_in_executor() is False
+        assert engine._scheduler_step_affinity is None
+        assert engine._scheduler_step_affinity_batch_generator_id is None
+
+
+class TestFinishedOutputCacheClearPolicy:
+    """Tests for finished-output MLX cache clear cadence controls."""
+
+    @staticmethod
+    def _make_engine(*, interval=None, enabled=True, log_timing=False):
+        from vllm_mlx.engine_core import EngineConfig, EngineCore
+
+        engine = EngineCore.__new__(EngineCore)
+        config_kwargs = {
+            "clear_finished_output_cache": enabled,
+            "log_finished_output_cache_clear": log_timing,
+        }
+        if interval is not None:
+            config_kwargs["finished_output_cache_clear_interval"] = interval
+        engine.config = EngineConfig(**config_kwargs)
+        engine._finished_output_cache_clear_events = 0
+        engine._finished_output_cache_clear_skips = 0
+        return engine
+
+    def test_finished_output_cache_clear_defaults_to_every_fourth_finished_event(
+        self, monkeypatch
+    ):
+        from vllm_mlx import engine_core
+
+        calls = []
+        monkeypatch.setattr(engine_core.mx, "clear_cache", lambda: calls.append("clear"))
+        engine = self._make_engine()
+
+        assert engine._maybe_clear_finished_output_cache(["r1"]) is False
+        assert engine._maybe_clear_finished_output_cache(["r2"]) is False
+        assert engine._maybe_clear_finished_output_cache(["r3"]) is False
+        assert engine._maybe_clear_finished_output_cache(["r4"]) is True
+
+        assert calls == ["clear"]
+
+    def test_finished_output_cache_clear_interval_one_clears_every_event(
+        self, monkeypatch
+    ):
+        from vllm_mlx import engine_core
+
+        calls = []
+        monkeypatch.setattr(engine_core.mx, "clear_cache", lambda: calls.append("clear"))
+        engine = self._make_engine(interval=1)
+
+        assert engine._maybe_clear_finished_output_cache(["r1"]) is True
+        assert engine._maybe_clear_finished_output_cache(["r2"]) is True
+
+        assert calls == ["clear", "clear"]
+
+    def test_finished_output_cache_clear_interval_skips_until_due(
+        self, monkeypatch, caplog
+    ):
+        from vllm_mlx import engine_core
+
+        calls = []
+        monkeypatch.setattr(engine_core.mx, "clear_cache", lambda: calls.append("clear"))
+        engine = self._make_engine(interval=3, log_timing=True)
+
+        assert engine._maybe_clear_finished_output_cache(["r1"]) is False
+        assert engine._maybe_clear_finished_output_cache(["r2"]) is False
+        with caplog.at_level("INFO"):
+            assert engine._maybe_clear_finished_output_cache(["r3"]) is True
+
+        assert calls == ["clear"]
+        assert engine._finished_output_cache_clear_events == 3
+        assert engine._finished_output_cache_clear_skips == 2
+        assert "finished_output_cache_clear" in caplog.text
 
 
 class TestSamplingParams:

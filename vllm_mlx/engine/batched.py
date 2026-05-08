@@ -17,6 +17,7 @@ from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
+from ..defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
 from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,12 @@ class BatchedEngine(BaseEngine):
         scheduler_config: Any | None = None,
         stream_interval: int = 1,
         force_mllm: bool = False,
+        use_prefill_executor: bool = True,
+        clear_finished_output_cache: bool = True,
+        finished_output_cache_clear_interval: int = (
+            DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
+        ),
+        log_finished_output_cache_clear: bool = False,
     ):
         """
         Initialize the batched engine.
@@ -147,12 +154,21 @@ class BatchedEngine(BaseEngine):
             scheduler_config: Optional scheduler configuration
             stream_interval: Tokens to batch before streaming (1=every token)
             force_mllm: Force loading as MLLM even if not auto-detected
+            use_prefill_executor: Run likely-prefill scheduler steps in the
+                single-thread executor
+            clear_finished_output_cache: Clear MLX cache after finished outputs
+            finished_output_cache_clear_interval: Clear after every N finished-output events
+            log_finished_output_cache_clear: Log timing for finished-output cache clears
         """
         self._model_name = model_name
         self._trust_remote_code = trust_remote_code
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
         self._is_mllm = force_mllm or is_mllm_model(model_name)
+        self._use_prefill_executor = use_prefill_executor
+        self._clear_finished_output_cache = clear_finished_output_cache
+        self._finished_output_cache_clear_interval = finished_output_cache_clear_interval
+        self._log_finished_output_cache_clear = log_finished_output_cache_clear
 
         self._model = None
         self._processor = None  # For MLLM
@@ -310,6 +326,12 @@ class BatchedEngine(BaseEngine):
             model_name=self._model_name,
             scheduler_config=scheduler_config,
             stream_interval=self._stream_interval,
+            use_prefill_executor=self._use_prefill_executor,
+            clear_finished_output_cache=self._clear_finished_output_cache,
+            finished_output_cache_clear_interval=(
+                self._finished_output_cache_clear_interval
+            ),
+            log_finished_output_cache_clear=self._log_finished_output_cache_clear,
         )
 
         # Create async engine

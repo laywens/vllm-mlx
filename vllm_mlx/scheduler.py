@@ -11,6 +11,7 @@ The scheduler follows vLLM's design with:
 - Continuous batching via BatchGenerator
 """
 
+import inspect
 import logging
 from collections import deque
 from dataclasses import dataclass, field
@@ -29,6 +30,13 @@ from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
+
+try:
+    _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK = (
+        "prompt_progress_callback" in inspect.signature(BatchGenerator).parameters
+    )
+except (TypeError, ValueError):
+    _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK = False
 
 # Enable MambaCache batching support for models like Nemotron
 ensure_mamba_support()
@@ -120,6 +128,28 @@ def _detect_repetition(
         )
         is not None
     )
+
+
+def _extract_generation_responses(responses: Any) -> list[Any]:
+    """Normalize mlx-lm BatchGenerator response shapes across versions."""
+    if not responses:
+        return []
+    if (
+        isinstance(responses, tuple)
+        and len(responses) == 2
+        and isinstance(responses[0], list)
+        and isinstance(responses[1], list)
+    ):
+        return list(responses[1])
+    return list(responses)
+
+
+def _get_batch_generator_active_batch(batch_generator: Any) -> Any | None:
+    """Return the best-effort active generation batch across mlx-lm versions."""
+    batch = getattr(batch_generator, "active_batch", None)
+    if batch is not None:
+        return batch
+    return getattr(batch_generator, "_generation_batch", None)
 
 
 def _trim_trimmable_prompt_cache(prompt_cache: list[Any], num_tokens: int) -> None:
@@ -1305,16 +1335,22 @@ class Scheduler:
                     f"tokens={processed}/{total}"
                 )
 
-        bg = BatchGenerator(
-            model=self.model,
-            max_tokens=sampling_params.max_tokens,
-            stop_tokens=stop_tokens,
-            sampler=sampler,
-            prefill_batch_size=self.config.prefill_batch_size,
-            completion_batch_size=self.config.completion_batch_size,
-            prefill_step_size=self.config.prefill_step_size,
-            prompt_progress_callback=_prefill_progress,
-        )
+        batch_generator_kwargs = {
+            "model": self.model,
+            "max_tokens": sampling_params.max_tokens,
+            "stop_tokens": stop_tokens,
+            "sampler": sampler,
+            "prefill_batch_size": self.config.prefill_batch_size,
+            "completion_batch_size": self.config.completion_batch_size,
+            "prefill_step_size": self.config.prefill_step_size,
+        }
+        if _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK:
+            batch_generator_kwargs["prompt_progress_callback"] = _prefill_progress
+
+        bg = BatchGenerator(**batch_generator_kwargs)
+        # Newer mlx-lm releases dropped the constructor kwarg, but the
+        # chunked-prefill compatibility shim still calls this callback directly.
+        bg.prompt_progress_callback = _prefill_progress
 
         # Install chunked prefill when explicitly configured OR when
         # memory-aware cache is active (needed for prefix_boundary saves
@@ -2393,7 +2429,7 @@ class Scheduler:
 
                 # Run generation step if we have running requests
                 if self.batch_generator is not None and self.running:
-                    responses = self.batch_generator.next()
+                    responses = _extract_generation_responses(self.batch_generator.next())
                     output.has_work = True
 
                     if responses:
@@ -2460,12 +2496,13 @@ class Scheduler:
         self._step_count += 1
         if self._step_count % effective_interval == 0:
             # Evaluate batch tokens to collapse lazy concatenation chains
-            if (
-                self.batch_generator is not None
-                and self.batch_generator.active_batch is not None
-                and hasattr(self.batch_generator.active_batch, "tokens")
-            ):
-                tokens = self.batch_generator.active_batch.tokens
+            batch = (
+                _get_batch_generator_active_batch(self.batch_generator)
+                if self.batch_generator is not None
+                else None
+            )
+            if batch is not None and hasattr(batch, "tokens"):
+                tokens = batch.tokens
                 if tokens:
                     mx.eval(*tokens)
             mx.clear_cache()
