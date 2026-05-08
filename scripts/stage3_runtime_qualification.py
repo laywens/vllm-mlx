@@ -444,7 +444,7 @@ def main() -> int:
     parser.add_argument(
         "--output-dir",
         default=str(
-            Path("_docs/exports")
+            Path("internal/docs/exports")
             / f"stage3-distilled-qwen35-runtime-qualification-{dt.datetime.now().strftime('%Y-%m-%d')}"
         ),
     )

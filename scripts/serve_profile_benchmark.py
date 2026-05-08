@@ -36,6 +36,28 @@ def _load_prompts(path: str | None) -> list[str]:
     return prompts
 
 
+def _load_extra_body(value: str | None) -> dict:
+    if not value:
+        return {}
+    payload = json.loads(value)
+    if not isinstance(payload, dict):
+        raise ValueError("--extra-body-json must decode to a JSON object")
+    return payload
+
+
+def _extract_model_ids(payload: dict) -> list[str]:
+    if payload.get("object") != "list" or not isinstance(payload.get("data"), list):
+        return []
+    model_ids: list[str] = []
+    for item in payload["data"]:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if isinstance(model_id, str) and model_id:
+            model_ids.append(model_id)
+    return model_ids
+
+
 def _call_chat(
     *,
     base_url: str,
@@ -46,6 +68,7 @@ def _call_chat(
     top_p: float,
     timeout: float,
     disable_thinking: bool = False,
+    extra_body: dict | None = None,
 ) -> dict:
     started = time.perf_counter()
     body = {
@@ -57,6 +80,8 @@ def _call_chat(
     }
     if disable_thinking:
         body["enable_thinking"] = False
+    if extra_body:
+        body.update(extra_body)
     response = requests.post(
         f"{base_url.rstrip('/')}/v1/chat/completions",
         json=body,
@@ -89,22 +114,49 @@ def _is_ready_response(response: requests.Response) -> bool:
     return False
 
 
-def _wait_for_health(base_url: str, timeout_s: float) -> None:
+def _wait_for_health(
+    base_url: str,
+    timeout_s: float,
+    required_model_id_substring: str | None = None,
+) -> str:
     deadline = time.time() + timeout_s
     probe_urls = [
         f"{base_url.rstrip('/')}/health",
         f"{base_url.rstrip('/')}/v1/models",
     ]
+    last_model_ids: list[str] = []
     while time.time() < deadline:
         for probe_url in probe_urls:
             try:
                 response = requests.get(probe_url, timeout=2.0)
-                if _is_ready_response(response):
-                    return
+                if not _is_ready_response(response):
+                    continue
+                try:
+                    payload = response.json()
+                except ValueError:
+                    continue
+                model_ids = _extract_model_ids(payload)
+                if model_ids:
+                    last_model_ids = model_ids
+                    if required_model_id_substring:
+                        for model_id in model_ids:
+                            if required_model_id_substring in model_id:
+                                return model_id
+                    else:
+                        return model_ids[0]
             except requests.RequestException:
                 pass
         time.sleep(0.5)
-    raise TimeoutError(f"Server health check did not pass within {timeout_s:.1f}s")
+    if required_model_id_substring:
+        raise TimeoutError(
+            "Server health/model-id check did not pass within "
+            f"{timeout_s:.1f}s; required substring="
+            f"{required_model_id_substring!r}, last advertised model ids={last_model_ids!r}"
+        )
+    raise TimeoutError(
+        "Server health check did not pass within "
+        f"{timeout_s:.1f}s; last advertised model ids={last_model_ids!r}"
+    )
 
 
 def main() -> int:
@@ -119,13 +171,26 @@ def main() -> int:
     parser.add_argument("--warmup-requests", type=int, default=0)
     parser.add_argument("--request-timeout", type=float, default=180.0)
     parser.add_argument("--health-timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--require-model-id-substring",
+        help="Fail unless at least one /v1/models id contains this substring",
+    )
     parser.add_argument("--disable-thinking", action="store_true",
                         help="Send enable_thinking=false in request body")
+    parser.add_argument(
+        "--extra-body-json",
+        help="Extra JSON object to merge into each request body",
+    )
     parser.add_argument("--json-out")
     args = parser.parse_args()
 
     prompts = _load_prompts(args.prompts_file)
-    _wait_for_health(args.base_url, args.health_timeout)
+    extra_body = _load_extra_body(args.extra_body_json)
+    advertised_model_id = _wait_for_health(
+        args.base_url,
+        args.health_timeout,
+        required_model_id_substring=args.require_model_id_substring,
+    )
 
     # Warm the active model and server path before collecting timed results.
     if prompts and args.warmup_requests > 0:
@@ -140,6 +205,7 @@ def main() -> int:
                 top_p=args.top_p,
                 timeout=args.request_timeout,
                 disable_thinking=args.disable_thinking,
+                extra_body=extra_body,
             )
 
     started = time.perf_counter()
@@ -157,6 +223,7 @@ def main() -> int:
                 top_p=args.top_p,
                 timeout=args.request_timeout,
                 disable_thinking=args.disable_thinking,
+                extra_body=extra_body,
             )
             for prompt in prompts
         ]
@@ -185,6 +252,9 @@ def main() -> int:
         "model": args.model,
         "base_url": args.base_url,
         "prompts_file": args.prompts_file,
+        "advertised_model_id": advertised_model_id,
+        "model_id_guard_substring": args.require_model_id_substring,
+        "extra_body": extra_body or None,
     }
 
     print("Results:")
