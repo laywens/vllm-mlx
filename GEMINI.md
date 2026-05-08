@@ -128,7 +128,7 @@ For interagent memos, write to `~/dev/interagent/inbox/incoming/`.
 
 ## Out of Scope
 
-- frontend application implementation, except backend compatibility support
+- application UI implementation, except backend compatibility support
 - speculative benchmark claims without stored evidence
 - writing sensitive coordination details into `docs/` or other public files
 
