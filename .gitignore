@@ -95,12 +95,13 @@ temp/
 
 # Local scratch benchmark artifacts (not for publishing)
 benchmarks/phase-results/_scratch/
+research/
 
 # MLX cache
 .mlx_cache/
 
 # Internal operator workspace artifacts
-_docs/
-_private/
+internal/docs/
+internal/sensitive/
 .sediment/
 .webui_secret_key

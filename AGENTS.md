@@ -18,9 +18,9 @@ If these files conflict, the matching runtime file wins.
 
 Primary project state and planning files:
 
-- `_docs/current-state.md`
-- `_docs/project-state.md`
-- `_docs/roadmap.md`
-- `_docs/decisions.md`
+- `internal/docs/current-state.md`
+- `internal/docs/project-state.md`
+- `internal/docs/roadmap.md`
+- `internal/docs/decisions.md`
 
-For delegation patterns only, see `_docs/agents.md`.
+For delegation patterns only, see `internal/docs/agents.md`.

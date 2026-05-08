@@ -8,7 +8,7 @@ permalink: vllm-mlx-fork/claude
 
 > Project-specific context only. Global settings live in `~/.claude/CLAUDE.md`.
 
-> __Agent succession:__ If `_docs/BOOTSTRAP-SUCCESSION.md` exists, complete it before any other work. It will walk you through the entity transition.
+> __Agent succession:__ If `internal/docs/BOOTSTRAP-SUCCESSION.md` exists, complete it before any other work. It will walk you through the entity transition.
 
 ---
 
@@ -19,7 +19,7 @@ __Type__: Forked inference server and Apple Silicon multimodal backend
 __Status__: Active  
 __Primary language(s)__: Python, Markdown, shell scripts
 
-This workspace is the working fork of `vllm-mlx` with custom backend patches, Apple Silicon validation, client compatibility evidence, and a large local-private documentation surface under `_docs/`.
+This workspace is the working fork of `vllm-mlx` with custom backend patches, Apple Silicon validation, client compatibility evidence, and a large local-private documentation surface under `internal/docs/`.
 
 ---
 
@@ -27,7 +27,7 @@ This workspace is the working fork of `vllm-mlx` with custom backend patches, Ap
 
 - `scripts/` — launchers, benchmarking utilities, and operator helpers
 - `docs/` — public docs safe to push
-- `_docs/` — private state, roadmap, benchmark exports, planning packets, and local-only notes
+- `internal/docs/` — private state, roadmap, benchmark exports, planning packets, and local-only notes
 - `CODEX.md`, `CLAUDE.md`, `GEMINI.md` — runtime-specific project configs
 - `AGENTS.md` — router file only
 
@@ -39,7 +39,7 @@ This workspace is the working fork of `vllm-mlx` with custom backend patches, Ap
 - `uv` for Python environments and tool installs
 - `mlx`, `mlx-vlm`, and this `vllm-mlx` fork for Apple Silicon multimodal serving
 - Hugging Face Hub tooling for model publish and validation work
-- local-private benchmark and planning artifacts under `_docs/`
+- local-private benchmark and planning artifacts under `internal/docs/`
 
 ---
 
@@ -47,10 +47,10 @@ This workspace is the working fork of `vllm-mlx` with custom backend patches, Ap
 
 __Session start__
 
-1. Read `_docs/current-state.md`
-2. Read `_docs/project-state.md`
-3. Read `_docs/roadmap.md`
-4. Read `_docs/decisions.md` if you need the decision trail
+1. Read `internal/docs/current-state.md`
+2. Read `internal/docs/project-state.md`
+3. Read `internal/docs/roadmap.md`
+4. Read `internal/docs/decisions.md` if you need the decision trail
 
 __Serve a multimodal model__
 
@@ -82,7 +82,7 @@ Use targeted verification commands for the file or workflow you changed. There i
 
 ## Architecture Decisions
 
-Reference `_docs/decisions.md` for the structured log.
+Reference `internal/docs/decisions.md` for the structured log.
 
 Key live decisions:
 
@@ -92,8 +92,8 @@ Key live decisions:
 
 Related planning docs:
 
-- `_docs/roadmap.md`
-- `_docs/specs/apple-silicon-gui-and-vlm-positioning-strategy-2026-03-21.md`
+- `internal/docs/roadmap.md`
+- `internal/docs/specs/apple-silicon-gui-and-vlm-positioning-strategy-2026-03-21.md`
 
 ---
 
@@ -102,15 +102,15 @@ Related planning docs:
 - Conventional commits
 - ISO 8601 dates everywhere
 - underscores for emphasis, dashes for bullets, no asterisk-based emphasis
-- public docs belong in `docs/`; sensitive and operator-facing context belongs in `_docs/`
+- public docs belong in `docs/`; sensitive and operator-facing context belongs in `internal/docs/`
 - no AI attribution lines in commits or docs
 
 ---
 
 ## Known Gotchas
 
-- `_docs/current-state.md` is the session-start file; do not look for `_docs/current.md`
-- `_docs/` contains local-only paths and private coordination context; do not mirror that content into `docs/`
+- `internal/docs/current-state.md` is the session-start file; do not look for `internal/docs/current.md`
+- `internal/docs/` contains local-only paths and private coordination context; do not mirror that content into `docs/`
 - multimodal packaging must keep root `processor_config.json` and a visible `tokenizer_config.json["chat_template"]`
 - some older `mlx-community` repos are legacy or stale and should not be assumed to be authoritative roots
 - `http://localhost:8012/v1` is intentionally reserved in this workspace; use parallel ports for experiments
@@ -145,16 +145,16 @@ __Inter-agent memos__: When drafting memos intended for other agents, write to `
 ## Public vs Internal Docs
 
 `docs/` and root-level public docs are __public__.
-Underscored directories such as `_docs/` are __private__ and local-only.
+The `internal/` directory is __private__ and local-only.
 
 __Content rules__:
 
 - __Public files__: must not contain agent or entity IDs, memo IDs, operator names, or interagent protocol text
-- __Private files__: full context is allowed, but keep it inside `_docs/` or other ignored locations
+- __Private files__: full context is allowed, but keep it inside `internal/docs/` or other ignored locations
 
 __Update workflow__:
 
-1. Write the full-context version in `_docs/`
+1. Write the full-context version in `internal/docs/`
 2. Derive the public version in `docs/`
 3. Never reverse that flow
 4. Audit public docs before any push
