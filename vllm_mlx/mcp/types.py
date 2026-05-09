@@ -5,7 +5,7 @@ Type definitions for MCP client support.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 class MCPTransport(str, Enum):
@@ -43,9 +43,6 @@ class MCPServerConfig:
     enabled: bool = True
     timeout: float = 30.0
 
-    # Security options
-    skip_security_validation: bool = False  # WARNING: Only for development!
-
     def __post_init__(self):
         """Validate configuration."""
         if isinstance(self.transport, str):
@@ -69,15 +66,6 @@ class MCPServerConfig:
         """Validate security of the configuration."""
         from .security import validate_mcp_server_config, MCPSecurityError
 
-        if self.skip_security_validation:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                f"MCP server '{self.name}': Security validation SKIPPED. "
-                f"This is dangerous and should only be used in development!"
-            )
-            return
-
         try:
             validate_mcp_server_config(
                 server_name=self.name,
@@ -97,6 +85,7 @@ class MCPConfig:
     servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
     max_tool_calls: int = 10
     default_timeout: float = 30.0
+    allowed_high_risk_tools: Set[str] = field(default_factory=set)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MCPConfig":
@@ -110,6 +99,7 @@ class MCPConfig:
             servers=servers,
             max_tool_calls=data.get("max_tool_calls", 10),
             default_timeout=data.get("default_timeout", 30.0),
+            allowed_high_risk_tools=set(data.get("allowed_high_risk_tools", [])),
         )
 
 

@@ -13,10 +13,8 @@ from .types import MCPConfig, MCPServerConfig
 
 logger = logging.getLogger(__name__)
 
-# Default config search paths
+# Default per-user config search paths
 CONFIG_SEARCH_PATHS = [
-    "./mcp.json",
-    "./mcp.yaml",
     "~/.config/vllm-mlx/mcp.json",
     "~/.config/vllm-mlx/mcp.yaml",
 ]
@@ -32,8 +30,7 @@ def load_mcp_config(path: Optional[Union[str, Path]] = None) -> MCPConfig:
     Search order:
     1. Explicit path argument
     2. VLLM_MLX_MCP_CONFIG environment variable
-    3. ./mcp.json or ./mcp.yaml (current directory)
-    4. ~/.config/vllm-mlx/mcp.json or mcp.yaml
+    3. ~/.config/vllm-mlx/mcp.json or mcp.yaml
 
     Args:
         path: Optional explicit path to config file
@@ -128,6 +125,11 @@ def validate_config(data: Dict[str, Any]) -> MCPConfig:
             # Ensure name is set
             if isinstance(server_data, dict):
                 server_data = server_data.copy()
+                if "skip_security_validation" in server_data:
+                    raise ValueError(
+                        f"Server '{name}' uses removed field 'skip_security_validation'. "
+                        "Use environment variable VLLM_MCP_ALLOW_UNSAFE=1 for explicit local development bypasses."
+                    )
                 server_data["name"] = name
                 servers[name] = MCPServerConfig(**server_data)
             else:
@@ -144,10 +146,20 @@ def validate_config(data: Dict[str, Any]) -> MCPConfig:
     if not isinstance(default_timeout, (int, float)) or default_timeout <= 0:
         raise ValueError("'default_timeout' must be a positive number")
 
+    allowed_high_risk_tools = data.get("allowed_high_risk_tools", [])
+    if not isinstance(allowed_high_risk_tools, list) or any(
+        not isinstance(tool, str) or not tool.strip()
+        for tool in allowed_high_risk_tools
+    ):
+        raise ValueError(
+            "'allowed_high_risk_tools' must be a list of non-empty strings"
+        )
+
     return MCPConfig(
         servers=servers,
         max_tool_calls=max_tool_calls,
         default_timeout=default_timeout,
+        allowed_high_risk_tools=set(allowed_high_risk_tools),
     )
 
 
@@ -182,5 +194,6 @@ def create_example_config() -> str:
         },
         "max_tool_calls": 10,
         "default_timeout": 30.0,
+        "allowed_high_risk_tools": [],
     }
     return json.dumps(example, indent=2)
