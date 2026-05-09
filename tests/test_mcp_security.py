@@ -7,7 +7,9 @@ command injection attacks and other security vulnerabilities.
 """
 
 import re
+
 import pytest
+
 from vllm_mlx.mcp.security import (
     MCPCommandValidator,
     MCPSecurityError,
@@ -569,6 +571,25 @@ class TestToolSandboxAuditLogging:
         assert audit.success is True
         assert audit.execution_time_ms == 50.5
         assert audit.error_message is None
+
+    def test_record_successful_execution_logs_zero_ms(self, caplog):
+        """Test that fast tool calls still include measured timing in logs."""
+        sandbox = ToolSandbox()
+
+        with caplog.at_level("INFO", logger="vllm_mlx.mcp.security"):
+            audit = sandbox.record_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": "/tmp/test.txt"},
+                success=True,
+                execution_time_ms=0.0,
+            )
+
+        assert audit.execution_time_ms == 0.0
+        assert (
+            "AUDIT: Tool executed - filesystem__read_file (took 0.0ms)"
+            in caplog.text
+        )
 
     def test_record_failed_execution(self):
         """Test recording a failed tool execution."""
