@@ -27,6 +27,7 @@ from .scheduler import (
     SchedulerConfig,
     _get_batch_generator_active_batch,
 )
+from .mlx_streams import bind_generation_streams
 from .output_collector import RequestOutputCollector, RequestStreamState
 from .model_registry import get_registry
 
@@ -635,6 +636,8 @@ class EngineCore:
             )
             self.scheduler.add_request(request)
             request_ids.append(request_id)
+
+        bind_generation_streams()
 
         # Process until all done - direct scheduler access, no async overhead
         results: Dict[str, RequestOutput] = {}

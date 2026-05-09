@@ -50,3 +50,14 @@ def pytest_collection_modifyitems(config, items):
 def server_url(request):
     """Get server URL from command line."""
     return request.config.getoption("--server-url")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _bind_mlx_default_stream():
+    """Ensure the main-thread default MLX stream is set once at session start."""
+    try:
+        import mlx.core as mx
+
+        mx.set_default_stream(mx.new_stream(mx.default_device()))
+    except ImportError:
+        pass
