@@ -55,6 +55,7 @@ from .liquidai_tool_parser import LiquidAIToolParser
 from .llama_tool_parser import LlamaToolParser
 from .mistral_tool_parser import MistralToolParser
 from .nemotron_tool_parser import NemotronToolParser
+from .qwen3_xml_tool_parser import Qwen3XMLToolParser
 from .qwen_tool_parser import QwenToolParser
 from .xlam_tool_parser import xLAMToolParser
 from .glm47_tool_parser import Glm47ToolParser
@@ -69,6 +70,7 @@ __all__ = [
     "AutoToolParser",
     "MistralToolParser",
     "QwenToolParser",
+    "Qwen3XMLToolParser",
     "LlamaToolParser",
     "HermesToolParser",
     "DeepSeekToolParser",
