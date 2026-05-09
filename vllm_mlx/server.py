@@ -4107,6 +4107,7 @@ async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
+    timeout: float | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -4125,6 +4126,7 @@ async def _disconnect_guard(
         return f"{_time.monotonic() - _t0:.1f}s"
 
     logger.info(f"[disconnect_guard] START poll_interval={poll_interval}s")
+    effective_timeout = timeout or _default_timeout
 
     async def _wait_disconnect():
         poll_count = 0
@@ -4143,15 +4145,28 @@ async def _disconnect_guard(
     chunk_count = 0
     disconnect_task: asyncio.Task | None = None
     anext_task: asyncio.Task | None = None
+    timeout_task: asyncio.Task | None = None
     try:
         aiter = generator.__aiter__()
         disconnect_task = asyncio.create_task(_wait_disconnect())
+        timeout_task = asyncio.create_task(asyncio.sleep(effective_timeout))
         while True:
             anext_task = asyncio.ensure_future(aiter.__anext__())
             done, _ = await asyncio.wait(
-                [anext_task, disconnect_task],
+                [anext_task, disconnect_task, timeout_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            if timeout_task in done:
+                logger.warning(
+                    f"[disconnect_guard] TIMEOUT after {effective_timeout:.1f}s, "
+                    f"{chunk_count} chunks, elapsed={_elapsed()}"
+                )
+                anext_task.cancel()
+                try:
+                    await anext_task
+                except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                    pass
+                break
             if disconnect_task in done:
                 logger.info(
                     f"[disconnect_guard] CLIENT DISCONNECTED after "
@@ -4184,6 +4199,8 @@ async def _disconnect_guard(
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
+        if timeout_task and not timeout_task.done():
+            timeout_task.cancel()
         if anext_task and not anext_task.done():
             anext_task.cancel()
         # NOTE: Do NOT call generator.aclose() here.  With run_in_executor,
@@ -4203,11 +4220,13 @@ async def _disconnect_guard(
 def _wrap_stream_with_optional_disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
+    *,
+    timeout: float | None = None,
 ) -> AsyncIterator[str]:
     """Skip disconnect polling only for explicit localhost benchmark runs."""
     if _should_bypass_local_disconnect_guard(raw_request):
         return generator
-    return _disconnect_guard(generator, raw_request)
+    return _disconnect_guard(generator, raw_request, timeout=timeout)
 
 
 async def _wait_with_disconnect(
@@ -4339,8 +4358,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
     if request.stream:
         return StreamingResponse(
-            _wrap_stream_with_optional_disconnect_guard(
-                _ensure_sse_terminal(
+            _ensure_sse_terminal(
+                _wrap_stream_with_optional_disconnect_guard(
                     stream_completion(
                         engine,
                         prompts[0],
@@ -4349,9 +4368,10 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         repetition_policy=effective_repetition_policy,
                         request_id=f"completion-stream-{uuid.uuid4().hex[:8]}",
                     ),
-                    "data: [DONE]\n\n",
+                    raw_request,
+                    timeout=request.timeout or _default_timeout,
                 ),
-                raw_request,
+                "data: [DONE]\n\n",
             ),
             media_type="text/event-stream",
         )
@@ -4609,8 +4629,8 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     if request.stream:
         return StreamingResponse(
-            _wrap_stream_with_optional_disconnect_guard(
-                _ensure_sse_terminal(
+            _ensure_sse_terminal(
+                _wrap_stream_with_optional_disconnect_guard(
                     stream_chat_completion(
                         engine,
                         messages,
@@ -4618,9 +4638,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         request_id=response_request_id,
                         **chat_kwargs,
                     ),
-                    "data: [DONE]\n\n",
+                    raw_request,
+                    timeout=request.timeout or _default_timeout,
                 ),
-                raw_request,
+                "data: [DONE]\n\n",
             ),
             media_type="text/event-stream",
         )
@@ -4809,17 +4830,18 @@ async def create_anthropic_message(
             f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
         )
         return StreamingResponse(
-            _wrap_stream_with_optional_disconnect_guard(
-                _ensure_sse_terminal(
+            _ensure_sse_terminal(
+                _wrap_stream_with_optional_disconnect_guard(
                     _stream_anthropic_messages(
                         engine,
                         openai_request,
                         anthropic_request,
                         max_tokens=effective_max_tokens,
                     ),
-                    terminal_frame,
+                    request,
+                    timeout=_default_timeout,
                 ),
-                request,
+                terminal_frame,
             ),
             media_type="text/event-stream",
             headers={

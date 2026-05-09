@@ -1651,6 +1651,37 @@ class TestSseTerminal:
         assert chunks[-1] == terminal
         assert "data: [DONE]\n\n" not in chunks
 
+    @pytest.mark.anyio
+    async def test_disconnect_guard_timeout_terminates_stalled_stream(self):
+        import asyncio
+
+        from vllm_mlx.server import _disconnect_guard, _ensure_sse_terminal
+
+        class ConnectedRequest:
+            async def is_disconnected(self):
+                return False
+
+        async def stalled_stream():
+            await asyncio.sleep(10)
+            yield "data: never\n\n"
+
+        stream = _ensure_sse_terminal(
+            _disconnect_guard(
+                stalled_stream(),
+                ConnectedRequest(),
+                poll_interval=0.01,
+                timeout=0.02,
+            ),
+            "data: [DONE]\n\n",
+        )
+
+        async def collect():
+            return [chunk async for chunk in stream]
+
+        chunks = await asyncio.wait_for(collect(), timeout=1.0)
+
+        assert chunks == ["data: [DONE]\n\n"]
+
 
 # =============================================================================
 # Security and Reliability Tests (PR #4)
