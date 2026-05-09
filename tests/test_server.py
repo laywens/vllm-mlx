@@ -1682,6 +1682,129 @@ class TestLogAndExceptionSanitization:
     """Test internal exception logging and public 500 responses."""
 
     @pytest.mark.anyio
+    async def test_create_chat_completion_sanitizes_model_media_safety_error(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        import vllm_mlx.server as server
+        from vllm_mlx.models.mllm import UnsafeRemoteURLError
+
+        class UnsafeMediaEngine:
+            is_mllm = True
+            preserve_native_tool_format = False
+
+            async def chat(self, **_kwargs):
+                raise UnsafeRemoteURLError(
+                    "Remote media URL resolves to blocked address(es): 169.254.169.254"
+                )
+
+        async def await_result(result, raw_request, timeout):
+            del raw_request, timeout
+            return await result
+
+        monkeypatch.setattr(server, "get_engine", lambda: UnsafeMediaEngine())
+        monkeypatch.setattr(server, "_wait_with_disconnect", await_result)
+        monkeypatch.setattr(server, "_allow_private_media_hosts", True)
+        monkeypatch.setattr(server, "_strict_model_id", False)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+
+        request = server.ChatCompletionRequest(
+            model="test-model",
+            messages=[
+                server.Message(
+                    role="user",
+                    content=[
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "http://169.254.169.254/latest/meta-data/"
+                            },
+                        },
+                    ],
+                )
+            ],
+            max_tokens=8,
+        )
+
+        with pytest.raises(server.HTTPException) as exc:
+            await server.create_chat_completion(
+                request,
+                raw_request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")),
+            )
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "Remote media URL is not allowed"
+        assert "169.254.169.254" not in exc.value.detail
+
+    @pytest.mark.anyio
+    async def test_create_anthropic_message_sanitizes_model_media_safety_error(
+        self, monkeypatch
+    ):
+        import vllm_mlx.server as server
+        from vllm_mlx.models.mllm import UnsafeRemoteURLError
+
+        class UnsafeMediaEngine:
+            is_mllm = True
+            preserve_native_tool_format = False
+
+            async def chat(self, **_kwargs):
+                raise UnsafeRemoteURLError(
+                    "Remote media URL resolves to blocked address(es): 169.254.169.254"
+                )
+
+        class FakeRequest:
+            client = None
+
+            async def json(self):
+                return {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "describe"}],
+                    "max_tokens": 8,
+                }
+
+        async def await_result(result, raw_request, timeout):
+            del raw_request, timeout
+            return await result
+
+        def fake_anthropic_to_openai(_anthropic_request):
+            return server.ChatCompletionRequest(
+                model="test-model",
+                messages=[
+                    server.Message(
+                        role="user",
+                        content=[
+                            {"type": "text", "text": "describe"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": "http://169.254.169.254/latest/meta-data/"
+                                },
+                            },
+                        ],
+                    )
+                ],
+                max_tokens=8,
+            )
+
+        monkeypatch.setattr(server, "get_engine", lambda: UnsafeMediaEngine())
+        monkeypatch.setattr(server, "_wait_with_disconnect", await_result)
+        monkeypatch.setattr(server, "anthropic_to_openai", fake_anthropic_to_openai)
+        monkeypatch.setattr(server, "_allow_private_media_hosts", True)
+        monkeypatch.setattr(server, "_strict_model_id", False)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+
+        with pytest.raises(server.HTTPException) as exc:
+            await server.create_anthropic_message(FakeRequest())
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "Remote media URL is not allowed"
+        assert "169.254.169.254" not in exc.value.detail
+
+    @pytest.mark.anyio
     async def test_create_embeddings_hides_internal_exception_details(
         self, monkeypatch, caplog
     ):

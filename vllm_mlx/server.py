@@ -143,6 +143,7 @@ from .endpoint_model_policies import (
     resolve_stt_model_name,
     resolve_tts_model_name,
 )
+from .models.mllm import UnsafeRemoteURLError
 from .runtime_mode import save_observed_peak_concurrency
 from .tool_parsers import ToolParserManager
 
@@ -228,6 +229,15 @@ def _log_and_raise_internal_error(log_prefix: str, exc: Exception, detail: str) 
     """Log a sanitized exception string and raise a generic 500 response."""
     logger.error("%s: %s", log_prefix, _sanitize_log_text(exc, limit=500))
     raise HTTPException(status_code=500, detail=detail)
+
+
+def _raise_remote_media_http_error(exc: UnsafeRemoteURLError) -> None:
+    """Log URL-safety detail while returning only the public error message."""
+    logger.warning(
+        "Blocked unsafe remote media URL: %s",
+        _sanitize_log_text(exc, limit=500),
+    )
+    raise HTTPException(status_code=400, detail=exc.public_message) from exc
 
 
 def _resolve_request_max_tokens(request_value: int | None) -> int:
@@ -4588,11 +4598,14 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     start_time = time.perf_counter()
     timeout = request.timeout or _default_timeout
 
-    output = await _wait_with_disconnect(
-        engine.chat(messages=messages, **chat_kwargs),
-        raw_request,
-        timeout=timeout,
-    )
+    try:
+        output = await _wait_with_disconnect(
+            engine.chat(messages=messages, **chat_kwargs),
+            raw_request,
+            timeout=timeout,
+        )
+    except UnsafeRemoteURLError as exc:
+        _raise_remote_media_http_error(exc)
     if output is None:
         return Response(status_code=499)  # Client closed request
     _record_repetition_intervention(
@@ -4808,11 +4821,14 @@ async def create_anthropic_message(
     start_time = time.perf_counter()
     timeout = _default_timeout
 
-    output = await _wait_with_disconnect(
-        engine.chat(messages=messages, **chat_kwargs),
-        request,
-        timeout=timeout,
-    )
+    try:
+        output = await _wait_with_disconnect(
+            engine.chat(messages=messages, **chat_kwargs),
+            request,
+            timeout=timeout,
+        )
+    except UnsafeRemoteURLError as exc:
+        _raise_remote_media_http_error(exc)
     if output is None:
         return Response(status_code=499)  # Client closed request
     _record_repetition_intervention(
