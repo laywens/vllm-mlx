@@ -887,6 +887,29 @@ class TestEngineAsync:
 
         assert not engine.engine.is_running()
 
+    async def test_stream_outputs_final_chunk_close_does_not_abort(self):
+        """Closing after the final output must not abort the finished request."""
+        from vllm_mlx.engine_core import EngineCore
+        from vllm_mlx.output_collector import RequestOutputCollector
+
+        request_id = "req-final"
+        engine = EngineCore.__new__(EngineCore)
+        engine._output_collectors = {
+            request_id: RequestOutputCollector(aggregate=False),
+        }
+        engine._stream_states = {}
+        engine._finished_events = {}
+        engine.scheduler = MagicMock()
+
+        final_output = RequestOutput(request_id=request_id, finished=True)
+        engine._output_collectors[request_id].put(final_output)
+
+        stream = engine.stream_outputs(request_id)
+        assert await stream.__anext__() is final_output
+        await stream.aclose()
+
+        engine.scheduler.abort_request.assert_not_called()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -500,15 +500,15 @@ class EngineCore:
                             f"{_time.monotonic() - _t0:.1f}s"
                         )
 
-                    yield output
-
                     if output.finished:
                         finished_normally = True
+                        yield output
                         logger.info(
                             f"[stream_outputs] {request_id[:12]} finished normally, "
                             f"{_token_count} tokens in {_time.monotonic() - _t0:.1f}s"
                         )
                         break
+                    yield output
 
                 except asyncio.TimeoutError:
                     logger.warning(

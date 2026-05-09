@@ -13,6 +13,7 @@ Test Cases:
 - Mixed text-only and multimodal requests
 """
 
+import asyncio
 import base64
 import os
 import tempfile
@@ -424,6 +425,26 @@ class TestMLLMSchedulerDetokenizer:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
+
+    @pytest.mark.asyncio
+    async def test_stream_outputs_final_chunk_close_does_not_abort(self):
+        """Closing after the final output must not abort the finished request."""
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from vllm_mlx.request import RequestOutput
+
+        request_id = "req-final"
+        scheduler = MLLMScheduler.__new__(MLLMScheduler)
+        scheduler.output_queues = {request_id: asyncio.Queue()}
+        scheduler.abort_request = MagicMock()
+
+        final_output = RequestOutput(request_id=request_id, finished=True)
+        scheduler.output_queues[request_id].put_nowait(final_output)
+
+        stream = scheduler.stream_outputs(request_id)
+        assert await stream.__anext__() is final_output
+        await stream.aclose()
+
+        scheduler.abort_request.assert_not_called()
 
 
 class TestMLLMSchedulerVideoParams:
