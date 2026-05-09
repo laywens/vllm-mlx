@@ -3090,6 +3090,43 @@ class TestRateLimiterHTTPResponse:
         assert allowed is True
 
 
+class TestRequestCancellationEndpoint:
+    @pytest.mark.anyio
+    async def test_cancel_request_routes_to_loaded_engine(self, monkeypatch):
+        import vllm_mlx.server as server
+
+        class DummyEngine:
+            async def abort_request(self, request_id):
+                self.request_id = request_id
+                return True
+
+        engine = DummyEngine()
+        monkeypatch.setattr(server, "_engine", engine)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+
+        result = await server.cancel_request("req-123")
+
+        assert result["cancelled"] is True
+        assert result["id"] == "req-123"
+        assert result["model"] == "test-model"
+        assert engine.request_id == "req-123"
+
+    @pytest.mark.anyio
+    async def test_cancel_request_404_for_unknown_request(self, monkeypatch):
+        import vllm_mlx.server as server
+
+        class DummyEngine:
+            async def abort_request(self, request_id):
+                return False
+
+        monkeypatch.setattr(server, "_engine", DummyEngine())
+
+        with pytest.raises(server.HTTPException) as exc:
+            await server.cancel_request("missing")
+
+        assert exc.value.status_code == 404
+
+
 # =============================================================================
 # Integration Tests (require running server)
 # =============================================================================

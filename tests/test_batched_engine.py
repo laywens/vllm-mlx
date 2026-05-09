@@ -77,6 +77,42 @@ class TestBatchedEngineGenerate:
         assert result.finish_reason == "stop"
 
 
+class TestBatchedEngineAbortRequest:
+    @pytest.mark.anyio
+    async def test_abort_request_routes_to_mllm_scheduler(self):
+        engine = TestBatchedEngineGenerate()._make_engine(is_mllm=True)
+        engine._mllm_scheduler = MagicMock()
+        engine._mllm_scheduler.abort_request.return_value = True
+
+        assert await engine.abort_request("req-1") is True
+        engine._mllm_scheduler.abort_request.assert_called_once_with("req-1")
+
+    @pytest.mark.anyio
+    async def test_abort_request_routes_to_text_engine(self):
+        engine = TestBatchedEngineGenerate()._make_engine()
+        engine._engine = MagicMock()
+        engine._engine.abort_request.return_value = True
+
+        assert await engine.abort_request("req-1") is True
+        engine._engine.abort_request.assert_called_once_with("req-1")
+
+    @pytest.mark.anyio
+    async def test_abort_request_routes_to_async_text_engine(self):
+        engine = TestBatchedEngineGenerate()._make_engine()
+        engine._engine = MagicMock()
+        engine._engine.abort_request = AsyncMock(return_value=True)
+
+        assert await engine.abort_request("req-1") is True
+        engine._engine.abort_request.assert_awaited_once_with("req-1")
+
+    @pytest.mark.anyio
+    async def test_abort_request_returns_false_without_supported_engine(self):
+        engine = TestBatchedEngineGenerate()._make_engine()
+        engine._engine = None
+
+        assert await engine.abort_request("req-1") is False
+
+
 class TestToolCallReplayNormalization:
     """Tests for OpenAI tool-call replay normalization before chat templating."""
 
