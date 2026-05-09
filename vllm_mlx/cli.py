@@ -16,6 +16,7 @@ import argparse
 import sys
 from dataclasses import dataclass
 
+from .audio_limits import DEFAULT_MAX_AUDIO_UPLOAD_MB, DEFAULT_MAX_TTS_INPUT_CHARS
 from .defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
 
 
@@ -387,6 +388,8 @@ def serve_command(args):
     server._allow_local_media_paths = args.allow_local_media_paths
     server._allow_private_media_hosts = args.allow_private_media_hosts
     server._max_request_tokens = args.max_request_tokens
+    server._max_audio_upload_bytes = args.max_audio_upload_mb * 1024 * 1024
+    server._max_tts_input_chars = args.max_tts_input_chars
     if args.rate_limit > 0:
         server._rate_limiter = RateLimiter(
             requests_per_minute=args.rate_limit, enabled=True
@@ -503,6 +506,10 @@ def serve_command(args):
         f"limit={args.memory_limit_threshold:.1f}% "
         f"action={args.memory_action} "
         f"interval={args.memory_monitor_interval:.1f}s"
+    )
+    print(
+        f"  Audio upload limit: {args.max_audio_upload_mb} MiB, "
+        f"TTS input limit: {args.max_tts_input_chars} chars"
     )
     print(
         "  Batch divergence: "
@@ -1480,6 +1487,18 @@ Examples:
             "Allow chat requests to fetch media from private or loopback URLs. "
             "Disabled by default."
         ),
+    )
+    serve_parser.add_argument(
+        "--max-audio-upload-mb",
+        type=int,
+        default=DEFAULT_MAX_AUDIO_UPLOAD_MB,
+        help="Maximum size of uploaded audio files in MiB (default: 25)",
+    )
+    serve_parser.add_argument(
+        "--max-tts-input-chars",
+        type=int,
+        default=DEFAULT_MAX_TTS_INPUT_CHARS,
+        help="Maximum number of characters accepted by /v1/audio/speech (default: 4096)",
     )
     serve_parser.add_argument(
         "--memory-warn-threshold",

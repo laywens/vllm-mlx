@@ -50,7 +50,6 @@ import logging
 import os
 import secrets
 import socket
-import tempfile
 import threading
 import time
 import uuid
@@ -129,6 +128,13 @@ from .api.utils import (
     extract_multimodal_content,
     is_mllm_model,  # noqa: F401
 )
+from .audio_limits import (
+    DEFAULT_MAX_AUDIO_UPLOAD_BYTES,
+    DEFAULT_MAX_AUDIO_UPLOAD_MB,
+    DEFAULT_MAX_TTS_INPUT_CHARS,
+    save_upload_with_limit,
+    validate_tts_input_length,
+)
 from .defaults import DEFAULT_FINISHED_OUTPUT_CACHE_CLEAR_INTERVAL
 from .engine import BaseEngine, BatchedEngine, GenerationOutput, SimpleEngine
 from .endpoint_model_policies import (
@@ -164,6 +170,8 @@ _benchmark_disable_request_logging: bool = False
 _benchmark_disable_local_disconnect_guard: bool = False
 _repetition_policy: str = "safe"  # safe | strict
 _repetition_override_policy: str = "trusted_only"  # trusted_only | disabled
+_max_audio_upload_bytes: int = DEFAULT_MAX_AUDIO_UPLOAD_BYTES
+_max_tts_input_chars: int = DEFAULT_MAX_TTS_INPUT_CHARS
 
 _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
@@ -3922,11 +3930,12 @@ async def create_transcription(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
+        # Stream uploaded file to disk under a hard size cap.
+        tmp_path = await save_upload_with_limit(
+            file,
+            max_bytes=_max_audio_upload_bytes,
+            default_suffix=".wav",
+        )
 
         try:
             result = _stt_engine.transcribe(tmp_path, language=language)
@@ -3978,6 +3987,7 @@ async def create_speech(
 
     try:
         model_name = resolve_tts_model_name(model)
+        validate_tts_input_length(input, max_chars=_max_tts_input_chars)
         from .audio.tts import TTSEngine  # Lazy import - optional feature
 
         # Load engine if needed
@@ -5648,6 +5658,18 @@ Examples:
         default=None,
         help="Default top_p for generation when not specified in request",
     )
+    parser.add_argument(
+        "--max-audio-upload-mb",
+        type=int,
+        default=DEFAULT_MAX_AUDIO_UPLOAD_MB,
+        help="Maximum size of uploaded audio files in MiB (default: 25)",
+    )
+    parser.add_argument(
+        "--max-tts-input-chars",
+        type=int,
+        default=DEFAULT_MAX_TTS_INPUT_CHARS,
+        help="Maximum number of characters accepted by /v1/audio/speech (default: 4096)",
+    )
 
     args = parser.parse_args()
 
@@ -5658,11 +5680,14 @@ Examples:
     global _batch_divergence_monitor_enabled, _batch_divergence_interval_seconds
     global _batch_divergence_threshold, _batch_divergence_action
     global _default_temperature, _default_top_p, _max_thinking_tokens
+    global _max_audio_upload_bytes, _max_tts_input_chars
     global _effective_context_tokens
     global _deterministic_mode, _deterministic_serialize
     _api_key = args.api_key
     _default_timeout = args.timeout
     _max_thinking_tokens = args.max_thinking_tokens
+    _max_audio_upload_bytes = args.max_audio_upload_mb * 1024 * 1024
+    _max_tts_input_chars = args.max_tts_input_chars
     if args.memory_warn_threshold <= 0:
         raise ValueError("--memory-warn-threshold must be > 0")
     if args.memory_limit_threshold <= args.memory_warn_threshold:
@@ -5719,6 +5744,11 @@ Examples:
     else:
         logger.warning("  Rate limiting: DISABLED - Use --rate-limit to enable")
     logger.info(f"  Request timeout: {args.timeout}s")
+    logger.info(
+        "  Audio upload limit: %s MiB, TTS input limit: %s chars",
+        args.max_audio_upload_mb,
+        args.max_tts_input_chars,
+    )
     logger.info(
         "  Memory guardrails: warn=%.1f%% limit=%.1f%% action=%s interval=%.1fs",
         args.memory_warn_threshold,
