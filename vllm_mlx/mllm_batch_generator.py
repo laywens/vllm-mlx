@@ -668,6 +668,14 @@ class MLLMBatchGenerator:
         output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
+        # Release preprocessed vision inputs now that they have been encoded
+        # into the KV cache. Holding these arrays pins Metal buffers for the
+        # rest of generation under sustained multimodal traffic.
+        request.pixel_values = None
+        request.attention_mask = None
+        request.image_grid_thw = None
+        request.extra_kwargs.clear()
+
         # Handle LanguageModelOutput or plain tensor
         if hasattr(output, "logits"):
             return output.logits
@@ -758,6 +766,12 @@ class MLLMBatchGenerator:
         y = mx.array(first_tokens)
 
         self._stats.prompt_time += time.perf_counter() - tic
+
+        for req in requests:
+            req.pixel_values = None
+            req.attention_mask = None
+            req.image_grid_thw = None
+            req.extra_kwargs.clear()
 
         return MLLMBatch(
             uids=[req.uid for req in requests],

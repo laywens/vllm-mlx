@@ -1924,6 +1924,8 @@ class Scheduler:
 
         if request is not None:
             request.set_finished(RequestStatus.FINISHED_ABORTED)
+            request.prompt_cache = None
+            request._extracted_cache = None
         self.finished_req_ids.add(request_id)
 
         # Flush Metal encoders after removing arrays from batch
@@ -2037,6 +2039,7 @@ class Scheduler:
                 self.uid_to_request_id[uid] = request.request_id
                 request.batch_uid = uid
                 request.status = RequestStatus.RUNNING
+                request.prompt_cache = None
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
@@ -2298,6 +2301,10 @@ class Scheduler:
                         values_attr = layer.values
                         if not callable(keys_attr) and not callable(values_attr):
                             mx.eval(keys_attr, values_attr)
+
+            if request is not None:
+                request.prompt_cache = None
+                request._extracted_cache = None
 
             # Remove from running
             if request_id in self.running:
