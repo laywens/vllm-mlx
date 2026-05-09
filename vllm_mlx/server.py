@@ -4103,6 +4103,68 @@ async def _ensure_sse_terminal(
             yield terminal_frame
 
 
+def _find_uvicorn_cycle(obj, depth=0, visited=None):
+    """Walk through middleware wrappers to find uvicorn's RequestResponseCycle.
+
+    This relies on uvicorn's internal ``RequestResponseCycle.disconnected``
+    attribute and Starlette's middleware closure layout. If either changes,
+    this returns None and disconnect detection falls back to timeout-only
+    behavior.
+    """
+    if depth > 8:
+        return None
+    if visited is None:
+        visited = set()
+    obj_id = id(obj)
+    if obj_id in visited:
+        return None
+    visited.add(obj_id)
+
+    if hasattr(obj, "disconnected") and isinstance(getattr(obj, "disconnected"), bool):
+        return obj
+
+    self_obj = getattr(obj, "__self__", None)
+    if self_obj is not None:
+        result = _find_uvicorn_cycle(self_obj, depth + 1, visited)
+        if result:
+            return result
+
+    inner = getattr(obj, "_receive", None)
+    if inner is not None:
+        result = _find_uvicorn_cycle(inner, depth + 1, visited)
+        if result:
+            return result
+
+    if hasattr(obj, "__closure__") and obj.__closure__:
+        for cell in obj.__closure__:
+            try:
+                val = cell.cell_contents
+                result = _find_uvicorn_cycle(val, depth + 1, visited)
+                if result:
+                    return result
+            except ValueError:
+                pass
+
+    return None
+
+
+def _is_client_disconnected(raw_request: Request) -> bool:
+    """Read uvicorn's disconnect flag directly when Starlette polling is stale."""
+    if getattr(raw_request, "_is_disconnected", False):
+        return True
+    cycle = getattr(raw_request, "_uvicorn_cycle", None)
+    if cycle is None:
+        receive = getattr(raw_request, "_receive", None)
+        if receive is None:
+            return False
+        cycle = _find_uvicorn_cycle(receive)
+        raw_request._uvicorn_cycle = cycle
+    if cycle is not None and cycle.disconnected:
+        raw_request._is_disconnected = True
+        return True
+    return False
+
+
 async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
@@ -4133,7 +4195,7 @@ async def _disconnect_guard(
         while True:
             await asyncio.sleep(poll_interval)
             poll_count += 1
-            is_disc = await raw_request.is_disconnected()
+            is_disc = _is_client_disconnected(raw_request)
             if poll_count % 10 == 0 or is_disc:
                 logger.info(
                     f"[disconnect_guard] poll #{poll_count} "
@@ -4266,7 +4328,7 @@ async def _wait_with_disconnect(
         while True:
             await asyncio.sleep(poll_interval)
             poll_count += 1
-            is_disc = await raw_request.is_disconnected()
+            is_disc = _is_client_disconnected(raw_request)
             if poll_count % 10 == 0 or is_disc:
                 logger.info(
                     f"[disconnect_guard] poll #{poll_count} "

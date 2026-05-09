@@ -1552,6 +1552,53 @@ class TestHelperFunctions:
 
         assert result == "ok"
 
+    def test_is_client_disconnected_reads_cached_uvicorn_cycle(self):
+        import types
+
+        import vllm_mlx.server as server
+
+        cycle = types.SimpleNamespace(disconnected=True)
+        request = types.SimpleNamespace(client=None, _receive=cycle)
+
+        assert server._is_client_disconnected(request) is True
+        assert request._is_disconnected is True
+        assert request._uvicorn_cycle is cycle
+
+    @pytest.mark.asyncio
+    async def test_wait_with_disconnect_uses_uvicorn_disconnect_flag(self, monkeypatch):
+        import asyncio
+        import types
+
+        import vllm_mlx.server as server
+
+        calls = 0
+
+        def fake_is_client_disconnected(_request):
+            nonlocal calls
+            calls += 1
+            return True
+
+        monkeypatch.setattr(
+            server, "_is_client_disconnected", fake_is_client_disconnected
+        )
+
+        async def _never_finishes():
+            await asyncio.sleep(10)
+
+        request = types.SimpleNamespace(
+            client=types.SimpleNamespace(host="198.51.100.24")
+        )
+
+        result = await server._wait_with_disconnect(
+            _never_finishes(),
+            request,
+            timeout=1.0,
+            poll_interval=0,
+        )
+
+        assert result is None
+        assert calls == 1
+
 
 class TestSseTerminal:
     """Regression tests for protocol-specific SSE terminal frames."""
