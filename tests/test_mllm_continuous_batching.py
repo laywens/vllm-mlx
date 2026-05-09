@@ -316,6 +316,29 @@ class TestMLLMSchedulerConfig:
         assert config.enable_vision_cache is False
 
 
+class TestMLLMSchedulerAbortMetrics:
+    """Tests for MLLM scheduler abort accounting."""
+
+    def test_abort_running_request_credits_inflight_tokens(self):
+        from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+        from vllm_mlx.request import RequestStatus
+
+        scheduler = MLLMScheduler(model=object(), processor=object())
+        request = MLLMRequest(request_id="req-1", prompt="Hello")
+        request.status = RequestStatus.RUNNING
+        request.num_prompt_tokens = 5
+        request.output_tokens = [10, 11, 12]
+        request.num_output_tokens = 3
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+
+        assert scheduler.abort_request(request.request_id) is True
+
+        assert scheduler.total_prompt_tokens == 5
+        assert scheduler.total_completion_tokens == 3
+
+
 class TestMLLMSchedulerVideoParams:
     """Tests for video parameter propagation in scheduler request state."""
 

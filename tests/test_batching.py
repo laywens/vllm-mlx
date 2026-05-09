@@ -532,6 +532,34 @@ class TestSchedulerBasic:
         assert scheduler.get_num_waiting() == 0
         assert "test-1" in scheduler.finished_req_ids
 
+    def test_abort_running_request_credits_inflight_tokens(
+        self, mock_model, mock_tokenizer
+    ):
+        """Aborted running requests should still contribute to aggregate stats."""
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+        )
+
+        request = Request(
+            request_id="test-1",
+            prompt="Hello world",
+            sampling_params=SamplingParams(),
+        )
+        request.prompt_token_ids = [1, 2, 3]
+        request.num_prompt_tokens = 3
+        request.status = RequestStatus.RUNNING
+        request.append_output_token(100)
+        request.append_output_token(101)
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+
+        scheduler._do_abort_request(request.request_id)
+
+        assert scheduler.total_prompt_tokens == 3
+        assert scheduler.total_completion_tokens == 2
+
     def test_abort_nonexistent_request(self, mock_model, mock_tokenizer):
         """Test aborting non-existent request (deferred abort always enqueues)."""
         scheduler = Scheduler(
