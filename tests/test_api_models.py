@@ -701,7 +701,7 @@ class TestModelSerialization:
         msg = AssistantMessage(content="Answer", reasoning="Thought")
         data = msg.model_dump()
         assert data["reasoning_content"] == "Thought"
-        assert data["reasoning"] == "Thought"
+        assert "reasoning" not in data
 
     def test_chat_completion_response_json(self):
         resp = ChatCompletionResponse(
@@ -719,8 +719,73 @@ class TestModelSerialization:
     def test_chunk_delta_serializes_reasoning_content(self):
         delta = ChatCompletionChunkDelta(reasoning="thinking")
         data = delta.model_dump()
-        assert data["reasoning"] == "thinking"
+        assert data["reasoning_content"] == "thinking"
+        assert "reasoning" not in data
+
+    def test_chat_completion_response_serializes_reasoning_content_only(self):
+        resp = ChatCompletionResponse(
+            model="test-model",
+            choices=[
+                ChatCompletionChoice(
+                    message=AssistantMessage(content="Answer", reasoning="Thought")
+                )
+            ],
+        )
+        data = resp.model_dump()
+        message = data["choices"][0]["message"]
+        assert message["reasoning_content"] == "Thought"
+        assert "reasoning" not in message
+
+    def test_chat_completion_chunk_serializes_reasoning_content_only(self):
+        chunk = ChatCompletionChunk(
+            model="test-model",
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(reasoning="thinking"),
+                )
+            ],
+        )
+        data = chunk.model_dump()
+        delta = data["choices"][0]["delta"]
+        assert delta["reasoning_content"] == "thinking"
+        assert "reasoning" not in delta
+
+    def test_assistant_message_excludes_null_tool_calls(self):
+        msg = AssistantMessage(content="Hello!")
+        data = msg.model_dump()
+        assert "tool_calls" not in data
         assert "reasoning_content" not in data
+
+    def test_assistant_message_excludes_null_reasoning(self):
+        msg = AssistantMessage(content="Hello!")
+        data = msg.model_dump()
+        assert "reasoning_content" not in data
+
+    def test_chunk_delta_excludes_null_fields(self):
+        delta = ChatCompletionChunkDelta(role="assistant")
+        data = delta.model_dump()
+        assert data == {"role": "assistant"}
+        assert "content" not in data
+        assert "tool_calls" not in data
+        assert "reasoning_content" not in data
+
+    def test_chunk_delta_empty_serializes_to_empty_dict(self):
+        delta = ChatCompletionChunkDelta()
+        data = delta.model_dump()
+        assert data == {}
+
+    def test_chunk_finish_reason_null_preserved(self):
+        chunk = ChatCompletionChunk(
+            model="test",
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(role="assistant"),
+                    finish_reason=None,
+                )
+            ],
+        )
+        data = chunk.model_dump()
+        assert data["choices"][0]["finish_reason"] is None
 
     def test_response_format_json_schema_alias(self):
         schema = ResponseFormatJsonSchema(

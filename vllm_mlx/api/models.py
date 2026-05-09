@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, model_serializer
 
 # =============================================================================
 # Content Types (for multimodal messages)
@@ -208,11 +208,22 @@ class AssistantMessage(BaseModel):
     )
     tool_calls: list[ToolCall] | None = None
 
-    @computed_field
     @property
     def reasoning_content(self) -> str | None:
-        """Alias for reasoning field. Serialized for backwards compatibility with clients expecting reasoning_content."""
+        """Alias for reasoning field for in-process compatibility helpers."""
         return self.reasoning
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        """Serialize with OpenAI-compatible response fields."""
+        data: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.reasoning is not None:
+            data["reasoning_content"] = self.reasoning
+        if self.tool_calls is not None:
+            data["tool_calls"] = [
+                tool_call.model_dump() for tool_call in self.tool_calls
+            ]
+        return data
 
 
 class ChatCompletionChoice(BaseModel):
@@ -630,6 +641,20 @@ class ChatCompletionChunkDelta(BaseModel):
     def reasoning_content(self) -> str | None:
         """Alias for reasoning field for in-process compatibility helpers."""
         return self.reasoning
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        """Serialize streaming deltas with only fields carrying new content."""
+        data: dict[str, Any] = {}
+        if self.role is not None:
+            data["role"] = self.role
+        if self.content is not None:
+            data["content"] = self.content
+        if self.reasoning is not None:
+            data["reasoning_content"] = self.reasoning
+        if self.tool_calls is not None:
+            data["tool_calls"] = self.tool_calls
+        return data
 
 
 class ChatCompletionChunkChoice(BaseModel):
