@@ -1601,6 +1601,58 @@ def _streaming_tool_markup_possible_after_delta(
     return _streaming_tool_markup_possible(check_text)
 
 
+def _tool_choice_disabled(request: ChatCompletionRequest | None) -> bool:
+    """Return True when tool_choice explicitly disables tool calling."""
+    if request is None:
+        return False
+    tool_choice = getattr(request, "tool_choice", None)
+    if tool_choice is None:
+        tool_choice = request.model_dump().get("tool_choice")
+    return tool_choice == "none"
+
+
+def _get_streaming_tool_parser(request: ChatCompletionRequest | None):
+    """Get a streaming-capable tool parser for this request."""
+    global _tool_parser_instance
+
+    if request is None or _tool_choice_disabled(request):
+        return None
+
+    tokenizer = None
+    if _engine is not None and hasattr(_engine, "_tokenizer"):
+        tokenizer = _engine._tokenizer
+
+    if _enable_auto_tool_choice and _tool_call_parser:
+        if _tool_parser_instance is None:
+            try:
+                parser_cls = ToolParserManager.get_tool_parser(_tool_call_parser)
+                _tool_parser_instance = parser_cls(tokenizer)
+                logger.info(f"Initialized tool call parser: {_tool_call_parser}")
+            except Exception as e:
+                logger.warning(
+                    "Failed to init tool parser for streaming: %s",
+                    _sanitize_log_text(e, limit=500),
+                )
+                return None
+        _tool_parser_instance.reset()
+        return _tool_parser_instance
+
+    if not getattr(request, "tools", None):
+        return None
+
+    try:
+        parser_cls = ToolParserManager.get_tool_parser("auto")
+        parser = parser_cls(tokenizer)
+        parser.reset()
+        return parser
+    except Exception as e:
+        logger.warning(
+            "Failed to init generic streaming tool parser: %s",
+            _sanitize_log_text(e, limit=500),
+        )
+        return None
+
+
 def _parse_tool_calls_with_mitigation(
     output_text: str,
     request_dict: dict[str, Any] | None,
@@ -5388,32 +5440,43 @@ async def stream_chat_completion(
     last_output = None
 
     # Tool call streaming state
-    global _tool_parser_instance
-    tool_parser = None
     tool_accumulated_text = ""
     tool_calls_detected = False
-    tool_markup_possible = False  # Fast path: skip parsing until '<' seen
+    tool_markup_possible = False
+    emitted_tool_call_total = 0
+    emitted_tool_call_counts: dict[tuple[str, str], int] = {}
     tools_for_schema_coercion = (
         request.model_dump().get("tools") if request and request.tools else None
     )
-    if _enable_auto_tool_choice and _tool_call_parser:
-        # Initialize parser if needed (same as _parse_tool_calls_with_parser)
-        if _tool_parser_instance is None:
-            try:
-                parser_cls = ToolParserManager.get_tool_parser(_tool_call_parser)
-                tokenizer = None
-                if _engine is not None and hasattr(_engine, "_tokenizer"):
-                    tokenizer = _engine._tokenizer
-                _tool_parser_instance = parser_cls(tokenizer)
-                logger.info(f"Initialized tool call parser: {_tool_call_parser}")
-            except Exception as e:
-                logger.warning(
-                    "Failed to init tool parser for streaming: %s",
-                    _sanitize_log_text(e, limit=500),
-                )
-        if _tool_parser_instance is not None:
-            tool_parser = _tool_parser_instance
-            tool_parser.reset()
+    tool_parser = _get_streaming_tool_parser(request)
+    tool_parser_replays_accumulated = bool(
+        tool_parser and not (_enable_auto_tool_choice and _tool_call_parser)
+    )
+
+    def _tool_call_delta_key(tool_call: dict[str, Any]) -> tuple[str, str]:
+        fn = tool_call.get("function")
+        if isinstance(fn, dict):
+            return str(fn.get("name") or ""), str(fn.get("arguments") or "")
+        return str(tool_call.get("name") or ""), str(tool_call.get("arguments") or "")
+
+    def _filter_new_tool_call_deltas(
+        tool_calls: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        batch_counts: dict[tuple[str, str], int] = {}
+        new_calls: list[dict[str, Any]] = []
+
+        for call in tool_calls:
+            key = _tool_call_delta_key(call)
+            batch_counts[key] = batch_counts.get(key, 0) + 1
+            if batch_counts[key] <= emitted_tool_call_counts.get(key, 0):
+                continue
+            new_calls.append(call)
+
+        for call in new_calls:
+            key = _tool_call_delta_key(call)
+            emitted_tool_call_counts[key] = emitted_tool_call_counts.get(key, 0) + 1
+
+        return new_calls
 
     # Reasoning budget state
     max_thinking_tokens = _resolve_max_thinking_tokens(request.max_thinking_tokens)
@@ -5430,6 +5493,7 @@ async def stream_chat_completion(
             (content, tool_calls, suppress_output)
         """
         nonlocal tool_accumulated_text, tool_calls_detected, tool_markup_possible
+        nonlocal emitted_tool_call_total
 
         if not tool_parser or not content_delta:
             return content_delta, None, False
@@ -5467,7 +5531,14 @@ async def stream_chat_completion(
                 coerced_tool_calls,
                 source="stream-parser",
             )
+            if tool_parser_replays_accumulated:
+                if len(filtered_tool_calls) <= emitted_tool_call_total:
+                    filtered_tool_calls = []
+                else:
+                    filtered_tool_calls = filtered_tool_calls[emitted_tool_call_total:]
+            filtered_tool_calls = _filter_new_tool_call_deltas(filtered_tool_calls)
             if filtered_tool_calls:
+                emitted_tool_call_total += len(filtered_tool_calls)
                 tool_calls_detected = True
                 return None, filtered_tool_calls, False
             return None, None, False
