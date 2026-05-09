@@ -428,6 +428,109 @@ class TestHelperFunctions:
         assert message_delta["usage"]["input_tokens"] == 9
         assert message_delta["usage"]["output_tokens"] == 1
 
+    @pytest.mark.anyio
+    async def test_anthropic_stream_suppresses_tool_markup_text(self, monkeypatch):
+        """Anthropic streaming should emit structured tool_use, not raw tags."""
+        from vllm_mlx.api.anthropic_models import (
+            AnthropicMessage,
+            AnthropicRequest,
+            AnthropicToolDef,
+        )
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.server import ChatCompletionRequest, Message
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            preserve_native_tool_format = False
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages, kwargs
+                chunks = [
+                    'Before <fun',
+                    'ction=read>{"path":"/tmp/test.py"}</function> After',
+                ]
+                for index, text in enumerate(chunks, start=1):
+                    yield GenerationOutput(
+                        text=text,
+                        new_text=text,
+                        prompt_tokens=7,
+                        completion_tokens=index,
+                        finished=index == len(chunks),
+                        finish_reason="stop" if index == len(chunks) else None,
+                    )
+
+        monkeypatch.setattr(server, "_model_name", "served-model")
+        monkeypatch.setattr(server, "_enable_auto_tool_choice", False)
+
+        openai_request = ChatCompletionRequest(
+            model="served-model",
+            messages=[Message(role="user", content="hi")],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "description": "Read a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+            stream=True,
+        )
+        anthropic_request = AnthropicRequest(
+            model="served-model",
+            messages=[AnthropicMessage(role="user", content="hi")],
+            tools=[
+                AnthropicToolDef(
+                    name="read",
+                    description="Read a file",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                )
+            ],
+            max_tokens=8,
+            stream=True,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in server._stream_anthropic_messages(
+                FakeEngine(),
+                openai_request,
+                anthropic_request,
+                max_tokens=8,
+            )
+        ]
+        events = [
+            json.loads(chunk.split("data: ", 1)[1])
+            for chunk in chunks
+            if chunk.startswith("event: ")
+        ]
+        text_deltas = [
+            event["delta"]["text"]
+            for event in events
+            if event.get("type") == "content_block_delta"
+            and event["delta"]["type"] == "text_delta"
+        ]
+        tool_blocks = [
+            event
+            for event in events
+            if event.get("type") == "content_block_start"
+            and event["content_block"]["type"] == "tool_use"
+        ]
+
+        assert "<function=" not in "".join(text_deltas)
+        assert "</function>" not in "".join(text_deltas)
+        assert "".join(text_deltas) == "Before  After"
+        assert tool_blocks[0]["content_block"]["name"] == "read"
+
     def test_metadata_detection_ignores_weak_qwen_vision_tokens(self, tmp_path):
         """Qwen text checkpoints can carry vision token IDs without vision encoder."""
         from vllm_mlx.api.utils import _metadata_indicates_mllm

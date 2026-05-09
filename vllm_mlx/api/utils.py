@@ -110,6 +110,97 @@ def clean_output_text(text: str) -> str:
 
 
 # =============================================================================
+# Streaming Tool Call Filter
+# =============================================================================
+
+_TOOL_CALL_TAGS = (
+    ("<minimax:tool_call>", "</minimax:tool_call>"),
+    ("<tool_call>", "</tool_call>"),
+    ("<function=", "</function>"),
+    ("[TOOL_CALL]", "[/TOOL_CALL]"),
+    ("[TOOL_CALLS]", "\n"),
+    ("[Calling tool", "\n"),
+)
+
+
+class StreamingToolCallFilter:
+    """Suppress tool-call markup from streaming text deltas."""
+
+    def __init__(self):
+        self._buffer = ""
+        self._in_block = False
+        self._close_tag = ""
+
+    def process(self, delta: str) -> str:
+        """Process a streaming delta and return safe text to emit."""
+        if not delta:
+            return ""
+
+        self._buffer += delta
+        if self._in_block:
+            return self._consume_block()
+        return self._scan_for_open()
+
+    def flush(self) -> str:
+        """Emit buffered non-tool text and discard incomplete tool blocks."""
+        if self._in_block:
+            self._buffer = ""
+            self._in_block = False
+            self._close_tag = ""
+            return ""
+
+        emit = self._buffer
+        self._buffer = ""
+        return emit
+
+    def _scan_for_open(self) -> str:
+        first_match = None
+        for open_tag, close_tag in _TOOL_CALL_TAGS:
+            tag_index = self._buffer.find(open_tag)
+            if tag_index >= 0:
+                candidate = (tag_index, open_tag, close_tag)
+                if first_match is None or candidate[0] < first_match[0]:
+                    first_match = candidate
+
+        if first_match is not None:
+            tag_index, open_tag, close_tag = first_match
+            emit = self._buffer[:tag_index]
+            self._buffer = self._buffer[tag_index + len(open_tag) :]
+            self._in_block = True
+            self._close_tag = close_tag
+            return emit + self._consume_block()
+
+        hold_back = 0
+        for open_tag, _ in _TOOL_CALL_TAGS:
+            max_prefix_len = min(len(open_tag), len(self._buffer))
+            for prefix_len in range(max_prefix_len, 0, -1):
+                if self._buffer.endswith(open_tag[:prefix_len]):
+                    hold_back = max(hold_back, prefix_len)
+                    break
+
+        if hold_back:
+            emit = self._buffer[:-hold_back]
+            self._buffer = self._buffer[-hold_back:]
+            return emit
+
+        emit = self._buffer
+        self._buffer = ""
+        return emit
+
+    def _consume_block(self) -> str:
+        close_index = self._buffer.find(self._close_tag)
+        if close_index < 0:
+            return ""
+
+        self._buffer = self._buffer[close_index + len(self._close_tag) :]
+        self._in_block = False
+        self._close_tag = ""
+        if not self._buffer:
+            return ""
+        return self._scan_for_open()
+
+
+# =============================================================================
 # Model Detection
 # =============================================================================
 

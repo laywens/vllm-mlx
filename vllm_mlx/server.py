@@ -125,6 +125,7 @@ from .api.tool_calling import (
 )
 from .api.utils import (
     SPECIAL_TOKENS_PATTERN,
+    StreamingToolCallFilter,
     clean_output_text,
     extract_multimodal_content,
     is_mllm_model,  # noqa: F401
@@ -5049,6 +5050,7 @@ async def _stream_anthropic_messages(
 
     # Stream content deltas
     accumulated_text = ""
+    tool_filter = StreamingToolCallFilter()
     prompt_tokens = 0
     completion_tokens = 0
 
@@ -5067,12 +5069,23 @@ async def _stream_anthropic_messages(
 
             if content:
                 accumulated_text += content
-                delta_event = {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": content},
-                }
-                yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+                filtered_content = tool_filter.process(content)
+                if filtered_content:
+                    delta_event = {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": filtered_content},
+                    }
+                    yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+
+    remaining_content = tool_filter.flush()
+    if remaining_content:
+        delta_event = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": remaining_content},
+        }
+        yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
 
     # Check for tool calls in accumulated text
     _, tool_calls = _parse_tool_calls_with_parser(accumulated_text, openai_request)
