@@ -30,6 +30,7 @@ class StreamingOutput:
     token: int
     finished: bool = False
     finish_reason: str | None = None
+    prompt_tokens: int = 0
 
 
 class MLXLanguageModel:
@@ -217,6 +218,7 @@ class MLXLanguageModel:
         sampler = self._create_sampler(temperature, top_p)
         logits_processors = self._create_logits_processors(repetition_penalty)
 
+        num_prompt_tokens = len(self.tokenizer.encode(prompt))
         token_count = 0
         accumulated_text = ""
 
@@ -256,6 +258,7 @@ class MLXLanguageModel:
                 token=response.token if hasattr(response, "token") else 0,
                 finished=finished,
                 finish_reason=finish_reason,
+                prompt_tokens=num_prompt_tokens,
             )
 
             if finished:

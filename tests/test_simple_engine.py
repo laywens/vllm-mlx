@@ -455,6 +455,39 @@ class TestSimpleEngineToolChoicePassthrough:
             assert total_elapsed_s - first_chunk_elapsed_s >= per_chunk_delay_s * 0.5
 
     @pytest.mark.asyncio
+    async def test_stream_generate_finished_chunk_falls_back_to_prompt_count(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        model = MagicMock()
+        model.tokenizer = MagicMock()
+        model.tokenizer.encode = MagicMock(return_value=[10, 11, 12])
+        model.stream_generate = MagicMock(
+            return_value=iter(
+                [
+                    SimpleNamespace(
+                        text="ok",
+                        token=1,
+                        prompt_tokens=0,
+                        finished=True,
+                        finish_reason="stop",
+                    )
+                ]
+            )
+        )
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-llm")
+            engine._model = model
+            engine._loaded = True
+
+            outputs = [
+                output
+                async for output in engine.stream_generate(prompt="hello", max_tokens=8)
+            ]
+
+            assert outputs[-1].prompt_tokens == 3
+
+    @pytest.mark.asyncio
     async def test_llm_chat_does_not_leak_tool_choice_to_model_call(self):
         from vllm_mlx.engine.simple import SimpleEngine
 

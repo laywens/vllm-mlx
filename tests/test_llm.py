@@ -51,6 +51,33 @@ def test_model_repr():
     assert "not loaded" in repr_str
 
 
+def test_stream_generate_reports_prompt_tokens(monkeypatch):
+    """Streaming output should carry prompt token accounting."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.models.llm import MLXLanguageModel
+
+    model = MLXLanguageModel("test-model")
+    model._loaded = True
+    model.model = object()
+    model.tokenizer = SimpleNamespace(encode=lambda text: [1, 2, 3])
+    monkeypatch.setattr(model, "_create_sampler", lambda *_args, **_kwargs: "sampler")
+    monkeypatch.setattr(
+        model,
+        "_create_logits_processors",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_stream_generate(*_args, **_kwargs):
+        yield SimpleNamespace(text="ok", token=42)
+
+    monkeypatch.setattr("mlx_lm.stream_generate", fake_stream_generate)
+
+    [output] = list(model.stream_generate("prompt", max_tokens=1))
+
+    assert output.prompt_tokens == 3
+
+
 @pytest.mark.slow
 def test_model_load(small_model_name):
     """Test loading a model (slow test, downloads model)."""

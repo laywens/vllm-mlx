@@ -601,7 +601,7 @@ class SimpleEngine(BaseEngine):
             ):
                 prompt_tokens = (
                     chunk.prompt_tokens
-                    if hasattr(chunk, "prompt_tokens")
+                    if hasattr(chunk, "prompt_tokens") and chunk.prompt_tokens
                     else prompt_tokens
                 )
                 completion_tokens += 1
@@ -614,6 +614,8 @@ class SimpleEngine(BaseEngine):
                 finish_reason = None
                 if finished:
                     finish_reason = getattr(chunk, "finish_reason", "stop")
+                    if prompt_tokens == 0:
+                        prompt_tokens = len(self._model.tokenizer.encode(prompt))
 
                 yield GenerationOutput(
                     text=accumulated_text,

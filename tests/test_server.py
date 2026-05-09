@@ -374,6 +374,60 @@ class TestHelperFunctions:
         assert delta.get("content") is None
         assert tool_payloads[0]["choices"][0]["finish_reason"] == "tool_calls"
 
+    @pytest.mark.anyio
+    async def test_anthropic_stream_message_delta_includes_input_tokens(self, monkeypatch):
+        """Anthropic streaming usage should include prompt token accounting."""
+        from vllm_mlx.api.anthropic_models import AnthropicMessage, AnthropicRequest
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.server import ChatCompletionRequest, Message
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            preserve_native_tool_format = False
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages, kwargs
+                yield GenerationOutput(
+                    text="hello",
+                    new_text="hello",
+                    prompt_tokens=9,
+                    completion_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                )
+
+        monkeypatch.setattr(server, "_model_name", "served-model")
+
+        openai_request = ChatCompletionRequest(
+            model="served-model",
+            messages=[Message(role="user", content="hi")],
+            stream=True,
+        )
+        anthropic_request = AnthropicRequest(
+            model="served-model",
+            messages=[AnthropicMessage(role="user", content="hi")],
+            max_tokens=8,
+            stream=True,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in server._stream_anthropic_messages(
+                FakeEngine(),
+                openai_request,
+                anthropic_request,
+                max_tokens=8,
+            )
+        ]
+        message_delta = next(
+            json.loads(chunk.split("data: ", 1)[1])
+            for chunk in chunks
+            if chunk.startswith("event: message_delta")
+        )
+
+        assert message_delta["usage"]["input_tokens"] == 9
+        assert message_delta["usage"]["output_tokens"] == 1
+
     def test_metadata_detection_ignores_weak_qwen_vision_tokens(self, tmp_path):
         """Qwen text checkpoints can carry vision token IDs without vision encoder."""
         from vllm_mlx.api.utils import _metadata_indicates_mllm
