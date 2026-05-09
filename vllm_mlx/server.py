@@ -4082,6 +4082,27 @@ async def list_voices(model: str = "kokoro"):
 # =============================================================================
 
 
+async def _ensure_sse_terminal(
+    generator: AsyncIterator[str],
+    terminal_frame: str,
+) -> AsyncIterator[str]:
+    """Guarantee a protocol-specific terminal SSE frame exactly once."""
+    emitted = False
+    try:
+        async for chunk in generator:
+            if chunk == terminal_frame:
+                emitted = True
+            yield chunk
+    except Exception as exc:
+        logger.error(
+            "Streaming generator raised before terminal frame: %s",
+            _sanitize_log_text(exc, limit=500),
+        )
+    finally:
+        if not emitted:
+            yield terminal_frame
+
+
 async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
@@ -4319,13 +4340,16 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if request.stream:
         return StreamingResponse(
             _wrap_stream_with_optional_disconnect_guard(
-                stream_completion(
-                    engine,
-                    prompts[0],
-                    request,
-                    max_tokens=effective_max_tokens,
-                    repetition_policy=effective_repetition_policy,
-                    request_id=f"completion-stream-{uuid.uuid4().hex[:8]}",
+                _ensure_sse_terminal(
+                    stream_completion(
+                        engine,
+                        prompts[0],
+                        request,
+                        max_tokens=effective_max_tokens,
+                        repetition_policy=effective_repetition_policy,
+                        request_id=f"completion-stream-{uuid.uuid4().hex[:8]}",
+                    ),
+                    "data: [DONE]\n\n",
                 ),
                 raw_request,
             ),
@@ -4586,12 +4610,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if request.stream:
         return StreamingResponse(
             _wrap_stream_with_optional_disconnect_guard(
-                stream_chat_completion(
-                    engine,
-                    messages,
-                    request,
-                    request_id=response_request_id,
-                    **chat_kwargs,
+                _ensure_sse_terminal(
+                    stream_chat_completion(
+                        engine,
+                        messages,
+                        request,
+                        request_id=response_request_id,
+                        **chat_kwargs,
+                    ),
+                    "data: [DONE]\n\n",
                 ),
                 raw_request,
             ),
@@ -4778,13 +4805,19 @@ async def create_anthropic_message(
     engine = get_engine()
 
     if anthropic_request.stream:
+        terminal_frame = (
+            f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+        )
         return StreamingResponse(
             _wrap_stream_with_optional_disconnect_guard(
-                _stream_anthropic_messages(
-                    engine,
-                    openai_request,
-                    anthropic_request,
-                    max_tokens=effective_max_tokens,
+                _ensure_sse_terminal(
+                    _stream_anthropic_messages(
+                        engine,
+                        openai_request,
+                        anthropic_request,
+                        max_tokens=effective_max_tokens,
+                    ),
+                    terminal_frame,
                 ),
                 request,
             ),

@@ -1553,6 +1553,105 @@ class TestHelperFunctions:
         assert result == "ok"
 
 
+class TestSseTerminal:
+    """Regression tests for protocol-specific SSE terminal frames."""
+
+    @pytest.mark.anyio
+    async def test_stream_completion_normal_emits_single_done(self, monkeypatch):
+        from vllm_mlx.api.models import CompletionRequest
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.server import stream_completion
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            async def stream_generate(self, **kwargs):
+                del kwargs
+                yield GenerationOutput(
+                    text="Hello",
+                    new_text="Hello",
+                    finished=True,
+                    finish_reason="stop",
+                    prompt_tokens=2,
+                    completion_tokens=1,
+                )
+
+        monkeypatch.setattr(server, "_model_name", "served-model")
+        request = CompletionRequest(model="served-model", prompt="hi")
+
+        chunks = [
+            chunk
+            async for chunk in stream_completion(
+                FakeEngine(),
+                "hi",
+                request,
+                max_tokens=8,
+                repetition_policy="safe",
+                request_id="test-request",
+            )
+        ]
+
+        assert chunks.count("data: [DONE]\n\n") == 1
+        assert chunks[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.anyio
+    async def test_ensure_sse_terminal_exception_emits_done(self):
+        from vllm_mlx.server import _ensure_sse_terminal
+
+        async def exploding_generator():
+            yield "data: {}\n\n"
+            raise RuntimeError("engine crashed")
+
+        chunks = [
+            chunk
+            async for chunk in _ensure_sse_terminal(
+                exploding_generator(), "data: [DONE]\n\n"
+            )
+        ]
+
+        assert chunks.count("data: [DONE]\n\n") == 1
+        assert chunks[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.anyio
+    async def test_ensure_sse_terminal_does_not_duplicate_done(self):
+        from vllm_mlx.server import _ensure_sse_terminal
+
+        async def happy_generator():
+            yield "data: {}\n\n"
+            yield "data: [DONE]\n\n"
+
+        chunks = [
+            chunk
+            async for chunk in _ensure_sse_terminal(
+                happy_generator(), "data: [DONE]\n\n"
+            )
+        ]
+
+        assert chunks.count("data: [DONE]\n\n") == 1
+
+    @pytest.mark.anyio
+    async def test_ensure_sse_terminal_uses_anthropic_protocol(self):
+        from vllm_mlx.server import _ensure_sse_terminal
+
+        terminal = (
+            f"event: message_stop\ndata: "
+            f"{json.dumps({'type': 'message_stop'})}\n\n"
+        )
+
+        async def exploding_anthropic_stream():
+            yield "event: content_block_delta\ndata: {}\n\n"
+            raise RuntimeError("engine crashed")
+
+        chunks = [
+            chunk
+            async for chunk in _ensure_sse_terminal(
+                exploding_anthropic_stream(), terminal
+            )
+        ]
+
+        assert chunks[-1] == terminal
+        assert "data: [DONE]\n\n" not in chunks
+
+
 # =============================================================================
 # Security and Reliability Tests (PR #4)
 # =============================================================================
