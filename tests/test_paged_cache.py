@@ -245,6 +245,14 @@ class TestHashBasedDeduplication:
         assert hash1 != hash3  # Different tokens = different hash
         assert len(hash1) == 16  # 16 char hex string
 
+    def test_compute_block_hash_distinguishes_token_ids_above_one_byte(self):
+        """Token IDs that share low 8 bits must not collide."""
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        assert PagedCacheManager.compute_block_hash([65]) != (
+            PagedCacheManager.compute_block_hash([321])
+        )
+
     def test_find_cached_block(self):
         """Test finding cached block by tokens."""
         from vllm_mlx.paged_cache import PagedCacheManager
