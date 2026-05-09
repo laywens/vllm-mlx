@@ -81,6 +81,38 @@ def test_serve_parser_includes_security_hardening_flags():
     assert found_flags == expected_flags
 
 
+def test_serve_parser_includes_max_request_tokens_flag():
+    tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "add_argument":
+            continue
+        if not isinstance(node.func.value, ast.Name):
+            continue
+        if node.func.value.id != "serve_parser":
+            continue
+        if not node.args:
+            continue
+
+        arg0 = node.args[0]
+        if isinstance(arg0, ast.Constant) and arg0.value == "--max-request-tokens":
+            type_kw = next((kw for kw in node.keywords if kw.arg == "type"), None)
+            default_kw = next((kw for kw in node.keywords if kw.arg == "default"), None)
+            assert type_kw is not None
+            assert isinstance(type_kw.value, ast.Name)
+            assert type_kw.value.id == "int"
+            assert default_kw is not None
+            assert isinstance(default_kw.value, ast.Constant)
+            assert default_kw.value.value == 32768
+            return
+
+    raise AssertionError("--max-request-tokens flag not found in serve_parser")
+
+
 def test_load_model_receives_trust_remote_code_from_cli_args():
     tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
 
@@ -102,6 +134,31 @@ def test_load_model_receives_trust_remote_code_from_cli_args():
         return
 
     raise AssertionError("load_model call with trust_remote_code=args.trust_remote_code not found")
+
+
+def test_load_model_receives_max_request_tokens_from_cli_args():
+    tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "load_model":
+            continue
+
+        max_request_kw = next(
+            (kw for kw in node.keywords if kw.arg == "max_request_tokens"), None
+        )
+        if max_request_kw is None:
+            continue
+        assert isinstance(max_request_kw.value, ast.Attribute)
+        assert isinstance(max_request_kw.value.value, ast.Name)
+        assert max_request_kw.value.value.id == "args"
+        assert max_request_kw.value.attr == "max_request_tokens"
+        return
+
+    raise AssertionError("load_model call with max_request_tokens=args.max_request_tokens not found")
 
 
 def test_uvicorn_bind_uses_resolved_host():

@@ -7,6 +7,7 @@ import sys
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 # Skip all tests if not on Apple Silicon
 pytestmark = pytest.mark.skipif(
@@ -168,6 +169,17 @@ class TestChatCompletionRequest:
         assert request.video_fps == 2.0
         assert request.video_max_frames == 16
 
+    def test_max_tokens_must_be_positive(self):
+        """Chat completion requests reject zero or negative max_tokens."""
+        from vllm_mlx.server import ChatCompletionRequest, Message
+
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(
+                model="test-model",
+                messages=[Message(role="user", content="Hello")],
+                max_tokens=0,
+            )
+
 
 class TestCompletionRequest:
     """Test CompletionRequest model."""
@@ -199,6 +211,28 @@ class TestCompletionRequest:
         assert request.frequency_penalty == 0.5
         assert request.repetition_penalty == 1.1
         assert request.repetition_policy_override == "safe"
+
+    def test_max_tokens_must_be_positive(self):
+        """Completion requests reject zero or negative max_tokens."""
+        from vllm_mlx.server import CompletionRequest
+
+        with pytest.raises(ValidationError):
+            CompletionRequest(model="test-model", prompt="Hello", max_tokens=0)
+
+
+class TestAnthropicRequest:
+    """Test Anthropic request model."""
+
+    def test_max_tokens_must_be_positive(self):
+        """Anthropic requests reject zero or negative max_tokens."""
+        from vllm_mlx.api.anthropic_models import AnthropicRequest
+
+        with pytest.raises(ValidationError):
+            AnthropicRequest(
+                model="test-model",
+                messages=[{"role": "user", "content": "Hello"}],
+                max_tokens=0,
+            )
 
 
 # =============================================================================
@@ -502,6 +536,21 @@ class TestHelperFunctions:
 
         monkeypatch.setattr(server, "_memory_state", DummyState())
         assert server._resolve_effective_max_tokens(200) == 100
+
+    def test_resolve_request_max_tokens_rejects_over_limit(self, monkeypatch):
+        import vllm_mlx.server as server
+
+        monkeypatch.setattr(server, "_default_max_tokens", 1024)
+        monkeypatch.setattr(server, "_max_request_tokens", 2048)
+
+        assert server._resolve_request_max_tokens(None) == 1024
+        assert server._resolve_request_max_tokens(512) == 512
+
+        with pytest.raises(HTTPException) as exc:
+            server._resolve_request_max_tokens(4096)
+
+        assert exc.value.status_code == 400
+        assert "server limit" in str(exc.value.detail)
 
     def test_resolve_effective_chat_max_tokens_applies_json_floor(self, monkeypatch):
         import vllm_mlx.server as server
@@ -1416,6 +1465,103 @@ class TestRequestTimeoutField:
             model="test-model", prompt="Once upon a time", timeout=120.0
         )
         assert request_with_timeout.timeout == 120.0
+
+
+class TestMaxTokensLimit:
+    """Test server-side max_tokens ceiling enforcement."""
+
+    def test_load_model_rejects_invalid_token_limits(self):
+        import vllm_mlx.server as server
+
+        with pytest.raises(ValueError, match="Default max tokens"):
+            server.load_model("test-model", max_tokens=0)
+
+        with pytest.raises(ValueError, match="Max request tokens"):
+            server.load_model("test-model", max_request_tokens=0)
+
+        with pytest.raises(ValueError, match="cannot exceed"):
+            server.load_model("test-model", max_tokens=2048, max_request_tokens=1024)
+
+    @pytest.mark.anyio
+    async def test_create_completion_rejects_over_limit_before_engine_lookup(
+        self, monkeypatch
+    ):
+        from vllm_mlx.server import CompletionRequest, create_completion
+        import vllm_mlx.server as server
+
+        monkeypatch.setattr(server, "_max_request_tokens", 1024, raising=False)
+        monkeypatch.setattr(
+            server,
+            "get_engine",
+            lambda: (_ for _ in ()).throw(AssertionError("engine should not load")),
+        )
+
+        request = CompletionRequest(
+            model="test-model",
+            prompt="Once upon a time",
+            max_tokens=2048,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await create_completion(request, raw_request=None)
+
+        assert exc.value.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_create_chat_completion_rejects_over_limit_before_engine_lookup(
+        self, monkeypatch
+    ):
+        from vllm_mlx.server import (
+            ChatCompletionRequest,
+            Message,
+            create_chat_completion,
+        )
+        import vllm_mlx.server as server
+
+        monkeypatch.setattr(server, "_max_request_tokens", 1024, raising=False)
+        monkeypatch.setattr(
+            server,
+            "get_engine",
+            lambda: (_ for _ in ()).throw(AssertionError("engine should not load")),
+        )
+
+        request = ChatCompletionRequest(
+            model="test-model",
+            messages=[Message(role="user", content="Hello")],
+            max_tokens=2048,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await create_chat_completion(request, raw_request=None)
+
+        assert exc.value.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_create_anthropic_message_rejects_over_limit_before_engine_lookup(
+        self, monkeypatch
+    ):
+        from vllm_mlx.server import create_anthropic_message
+        import vllm_mlx.server as server
+
+        class FakeRequest:
+            async def json(self):
+                return {
+                    "model": "test-model",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "max_tokens": 2048,
+                }
+
+        monkeypatch.setattr(server, "_max_request_tokens", 1024, raising=False)
+        monkeypatch.setattr(
+            server,
+            "get_engine",
+            lambda: (_ for _ in ()).throw(AssertionError("engine should not load")),
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await create_anthropic_message(FakeRequest())
+
+        assert exc.value.status_code == 400
 
 
 class TestAPIKeyVerification:

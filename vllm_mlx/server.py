@@ -142,6 +142,7 @@ _engine: BaseEngine | None = None
 _model_name: str | None = None
 _model_path: str | None = None  # Actual model path (for cache dir, not affected by --served-model-name)
 _default_max_tokens: int = 32768
+_max_request_tokens: int = 32768
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
@@ -169,6 +170,18 @@ _VIDEO_FPS_MAX = 8.0
 _VIDEO_MAX_FRAMES_MAX = 128
 _VIDEO_MAX_INPUTS_PER_REQUEST = 4
 _STRUCTURED_OUTPUT_MIN_MAX_TOKENS = 120
+
+
+def _resolve_request_max_tokens(request_value: int | None) -> int:
+    """Resolve and validate a request's max_tokens budget."""
+    if request_value is None:
+        return _default_max_tokens
+    if request_value > _max_request_tokens:
+        raise HTTPException(
+            status_code=400,
+            detail=f"max_tokens exceeds server limit ({_max_request_tokens})",
+        )
+    return request_value
 
 
 class ConcurrencyTracker:
@@ -1743,6 +1756,7 @@ def load_model(
     scheduler_config=None,
     stream_interval: int = 1,
     max_tokens: int = 32768,
+    max_request_tokens: int = 32768,
     force_mllm: bool = False,
     served_model_name: str | None = None,
     trust_remote_code: bool = False,
@@ -1768,6 +1782,7 @@ def load_model(
         scheduler_config: Scheduler config for batched mode
         stream_interval: Tokens to batch before streaming (batched mode only)
         max_tokens: Default max tokens for generation
+        max_request_tokens: Maximum max_tokens accepted from API clients
         force_mllm: Force loading as MLLM even if not auto-detected
         served_model_name: Override model name used in API responses
         trust_remote_code: Trust model/tokenizer remote code during loading
@@ -1782,13 +1797,22 @@ def load_model(
         specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
         specprefill_draft_model: Path to small draft model for SpecPrefill scoring
     """
-    global _engine, _model_name, _model_path, _default_max_tokens, _tool_parser_instance
+    global _engine, _model_name, _model_path, _default_max_tokens
+    global _max_request_tokens, _tool_parser_instance
     global _batch_divergence_state
+
+    if max_tokens < 1:
+        raise ValueError("Default max tokens must be at least 1")
+    if max_request_tokens < 1:
+        raise ValueError("Max request tokens must be at least 1")
+    if max_tokens > max_request_tokens:
+        raise ValueError("Default max tokens cannot exceed max request tokens")
 
     # Model reload invalidates previous model-trait triage state/caches.
     _reset_model_traits_triage_state()
 
     _default_max_tokens = max_tokens
+    _max_request_tokens = max_request_tokens
     _model_path = model_name
     _model_name = served_model_name or model_name
     # Reset tool parser instance when model is reloaded (tokenizer may change)
@@ -1844,6 +1868,7 @@ def load_model(
         logger.info(f"Native tool format enabled for parser: {_tool_call_parser}")
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
+    logger.info(f"Max request tokens: {_max_request_tokens}")
     _schedule_model_traits_triage_if_needed()
 
 
@@ -2772,7 +2797,7 @@ async def _batch_divergence_monitor_loop() -> None:
 
 def _resolve_effective_max_tokens(request_value: int | None) -> int:
     """Apply memory-pressure policy to request max_tokens."""
-    base = request_value or _default_max_tokens
+    base = _resolve_request_max_tokens(request_value)
     factor = _memory_state.max_tokens_factor()
     if factor >= 0.999:
         return base
@@ -4173,6 +4198,7 @@ async def _wait_with_disconnect(
 )
 async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
+    effective_max_tokens = _resolve_effective_max_tokens(request.max_tokens)
     engine = get_engine()
     _enforce_request_model_id(request.model)
 
@@ -4206,6 +4232,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     engine,
                     prompts[0],
                     request,
+                    max_tokens=effective_max_tokens,
                     repetition_policy=effective_repetition_policy,
                     request_id=f"completion-stream-{uuid.uuid4().hex[:8]}",
                 ),
@@ -4221,7 +4248,6 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         include_diagnostics=request.include_diagnostics,
         diagnostics_level=request.diagnostics_level,
     )
-    effective_max_tokens = _resolve_effective_max_tokens(request.max_tokens)
     choices = []
     total_completion_tokens = 0
     total_prompt_tokens = 0
@@ -4333,6 +4359,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     }
     ```
     """
+    effective_max_tokens = _resolve_effective_chat_max_tokens(request)
     engine = get_engine()
     _enforce_request_model_id(request.model)
     response_request_id = f"chatreq-{uuid.uuid4().hex[:8]}"
@@ -4427,7 +4454,6 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             messages = _inject_json_instruction(messages, json_instruction)
 
     # Prepare kwargs
-    effective_max_tokens = _resolve_effective_chat_max_tokens(request)
     chat_kwargs = {
         "max_tokens": effective_max_tokens,
         "temperature": _resolve_temperature(request.temperature),
@@ -4629,12 +4655,11 @@ async def create_anthropic_message(
 
     Supports both streaming and non-streaming modes.
     """
-    engine = get_engine()
-
     # Parse the raw body to handle Anthropic request format
     body = await request.json()
     anthropic_request = AnthropicRequest(**body)
     _enforce_request_model_id(anthropic_request.model)
+    effective_max_tokens = _resolve_effective_max_tokens(anthropic_request.max_tokens)
 
     # --- Detailed request logging ---
     n_msgs = len(anthropic_request.messages)
@@ -4656,10 +4681,17 @@ async def create_anthropic_message(
     openai_request = anthropic_to_openai(anthropic_request)
     _validate_request_media_sources(openai_request.messages)
 
+    engine = get_engine()
+
     if anthropic_request.stream:
         return StreamingResponse(
             _wrap_stream_with_optional_disconnect_guard(
-                _stream_anthropic_messages(engine, openai_request, anthropic_request),
+                _stream_anthropic_messages(
+                    engine,
+                    openai_request,
+                    anthropic_request,
+                    max_tokens=effective_max_tokens,
+                ),
                 request,
             ),
             media_type="text/event-stream",
@@ -4676,7 +4708,7 @@ async def create_anthropic_message(
     )
 
     chat_kwargs = {
-        "max_tokens": _resolve_effective_max_tokens(openai_request.max_tokens),
+        "max_tokens": effective_max_tokens,
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
         "repetition_policy": _normalize_repetition_policy(_repetition_policy),
@@ -4855,6 +4887,8 @@ async def _stream_anthropic_messages(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
     anthropic_request: AnthropicRequest,
+    *,
+    max_tokens: int,
 ) -> AsyncIterator[str]:
     """
     Stream Anthropic Messages API SSE events.
@@ -4873,7 +4907,7 @@ async def _stream_anthropic_messages(
     )
 
     chat_kwargs = {
-        "max_tokens": _resolve_effective_max_tokens(openai_request.max_tokens),
+        "max_tokens": max_tokens,
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
         "repetition_policy": _normalize_repetition_policy(_repetition_policy),
@@ -5016,18 +5050,18 @@ async def stream_completion(
     prompt: str,
     request: CompletionRequest,
     *,
+    max_tokens: int,
     repetition_policy: str,
     request_id: str,
 ) -> AsyncIterator[str]:
     """Stream completion response."""
-    effective_max_tokens = _resolve_effective_max_tokens(request.max_tokens)
     repetition_penalty = _resolve_repetition_penalty(
         request.repetition_penalty,
         request.frequency_penalty,
     )
     async for output in engine.stream_generate(
         prompt=prompt,
-        max_tokens=effective_max_tokens,
+        max_tokens=max_tokens,
         temperature=_resolve_temperature(request.temperature),
         top_p=_resolve_top_p(request.top_p),
         repetition_penalty=repetition_penalty,
@@ -5058,7 +5092,7 @@ async def stream_completion(
         if output.finished:
             _record_repetition_intervention(
                 output=output,
-                max_tokens=effective_max_tokens,
+                max_tokens=max_tokens,
                 request_id=request_id,
             )
             data["usage"] = get_usage(output).model_dump()
@@ -5457,6 +5491,12 @@ Examples:
         help="Default max tokens for generation",
     )
     parser.add_argument(
+        "--max-request-tokens",
+        type=int,
+        default=32768,
+        help="Maximum max_tokens accepted from API clients (default: 32768)",
+    )
+    parser.add_argument(
         "--api-key",
         type=str,
         default=None,
@@ -5670,6 +5710,12 @@ Examples:
     # Initialize reasoning parser if specified
     if args.max_thinking_tokens is not None and not args.reasoning_parser:
         raise ValueError("--max-thinking-tokens requires --reasoning-parser")
+    if args.max_tokens < 1:
+        raise ValueError("--max-tokens must be >= 1")
+    if args.max_request_tokens < 1:
+        raise ValueError("--max-request-tokens must be >= 1")
+    if args.max_tokens > args.max_request_tokens:
+        raise ValueError("--max-tokens cannot exceed --max-request-tokens")
 
     if args.reasoning_parser:
         global _reasoning_parser
@@ -5687,6 +5733,7 @@ Examples:
         args.model,
         use_batching=(args.continuous_batching and not _deterministic_mode),
         max_tokens=args.max_tokens,
+        max_request_tokens=args.max_request_tokens,
         force_mllm=args.mllm,
     )
 

@@ -172,7 +172,7 @@ class ChatCompletionRequest(BaseModel):
     enable_thinking: bool | None = None
     # Trusted-client-only override for repetition detector policy.
     repetition_policy_override: Literal["safe", "strict"] | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
     stream: bool = False
     stream_options: StreamOptions | None = (
         None  # Streaming options (include_usage, etc.)
@@ -277,7 +277,7 @@ class CompletionRequest(BaseModel):
     repetition_penalty: float | None = Field(default=None, gt=0.0)
     # Trusted-client-only override for repetition detector policy.
     repetition_policy_override: Literal["safe", "strict"] | None = None
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
     stream: bool = False
     stop: list[str] | None = None
     # Request timeout in seconds (None = use server default)
