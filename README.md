@@ -19,7 +19,7 @@ This project builds on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-
 | **Model compatibility** | Qwen3.5 `4B` / `9B` validated in `4-bit` and `8-bit` | Current trending Qwen family runs on the fork today |
 | **Serving ergonomics** | Validated profiles for text, deterministic, tools, JSON, and multimodal | Shorter path from clone to working backend |
 | **Runtime controls** | Divergence monitoring, strict model id, `frequency_penalty`, `enable_thinking` | Better debugging and safer correctness-sensitive operation |
-| **Upstream leverage** | Useful upstream fixes integrated; fork-side hardening ships faster | Faster iteration without cutting off upstream value |
+| **Upstream sync** | Useful upstream fixes integrated; fork-side hardening ships faster | Faster iteration without cutting off upstream value |
 
 Benchmarked on Apple Silicon using `mlx-community/Qwen3-0.6B-8bit`. Full configuration appears in [Detailed Benchmarks And Validation](#detailed-benchmarks-and-validation).
 
@@ -71,6 +71,21 @@ vllm-mlx serve mlx-community/Qwen3-4B-Instruct-2507-4bit --port 8000 --continuou
 ```
 
 For the full operator workflow, see the [Fork Operator Guide](docs/guides/fork-operator-guide.md).
+
+## Model Artifact Workflow
+
+Inspect or stage model artifacts before serving when you need an auditable setup path:
+
+```bash
+vllm-mlx model inspect mlx-community/Llama-3.2-3B-Instruct-4bit
+
+vllm-mlx model acquire mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --target-dir ./models/llama-3b-4bit
+
+vllm-mlx model convert meta-llama/Llama-3.2-3B-Instruct \
+  --output ./models/llama-3b-mlx-q4 \
+  --quantize --q-bits 4 --q-group-size 64 --q-mode affine
+```
 
 ## Serving Profiles
 
