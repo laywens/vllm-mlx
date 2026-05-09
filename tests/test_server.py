@@ -2221,6 +2221,78 @@ class TestLogAndExceptionSanitization:
         assert "boom\nsecret" not in messages[0]
 
 
+class TestChatCompletionMessagePreparation:
+    """Test chat message preparation before engine calls."""
+
+    @pytest.mark.anyio
+    async def test_mllm_native_tool_arguments_are_json_objects(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import vllm_mlx.server as server
+
+        class CapturingEngine:
+            is_mllm = True
+            preserve_native_tool_format = True
+
+            def __init__(self):
+                self.messages = None
+
+            async def chat(self, *, messages, **_kwargs):
+                self.messages = messages
+                return SimpleNamespace(
+                    text="done",
+                    tokens=[],
+                    prompt_tokens=4,
+                    completion_tokens=1,
+                    finish_reason="stop",
+                    stop_reason=None,
+                    stop_reason_detail=None,
+                )
+
+        engine = CapturingEngine()
+
+        async def await_result(result, raw_request, timeout):
+            del raw_request, timeout
+            return await result
+
+        monkeypatch.setattr(server, "get_engine", lambda: engine)
+        monkeypatch.setattr(server, "_wait_with_disconnect", await_result)
+        monkeypatch.setattr(server, "_strict_model_id", False)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+
+        request = server.ChatCompletionRequest(
+            model="test-model",
+            messages=[
+                server.Message(role="user", content="Use a tool."),
+                server.Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Tokyo"}',
+                            },
+                        }
+                    ],
+                ),
+            ],
+            max_tokens=8,
+        )
+
+        await server.create_chat_completion(
+            request,
+            raw_request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")),
+        )
+
+        assert engine.messages[1]["tool_calls"][0]["function"]["arguments"] == {
+            "city": "Tokyo"
+        }
+
+
 class TestAPIKeyVerification:
     """Test API key verification with timing attack prevention."""
 

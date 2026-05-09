@@ -12,6 +12,7 @@ from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
     FunctionaryToolParser,
+    Glm47ToolParser,
     GraniteToolParser,
     HermesToolParser,
     KimiToolParser,
@@ -39,6 +40,7 @@ class TestNativeToolFormatCapability:
             KimiToolParser,
             LiquidAIToolParser,
             HermesToolParser,
+            Glm47ToolParser,
         ]
         for parser_cls in native_parsers:
             assert (
@@ -76,6 +78,7 @@ class TestNativeToolFormatCapability:
             "kimi",
             "liquidai",
             "hermes",
+            "glm47",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert (

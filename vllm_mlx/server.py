@@ -4554,6 +4554,19 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             messages.append(msg_dict)
         images, videos = [], []  # MLLM extracts these from messages
         logger.debug(f"MLLM: Processing {len(messages)} messages")
+        # Native chat templates iterate tool arguments, but OpenAI sends
+        # them as JSON strings. The LLM path handles this in
+        # extract_multimodal_content(); the MLLM path bypasses that helper.
+        if engine.preserve_native_tool_format:
+            for msg_dict in messages:
+                for tool_call in msg_dict.get("tool_calls") or []:
+                    func = tool_call.get("function") or {}
+                    args = func.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            func["arguments"] = json.loads(args)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
     else:
         # For LLM, extract text, images, and videos separately
         messages, images, videos = extract_multimodal_content(
