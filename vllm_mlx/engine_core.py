@@ -376,7 +376,7 @@ class EngineCore:
                     await asyncio.sleep(step_interval)
 
             except asyncio.CancelledError:
-                break
+                raise
             except Exception as e:
                 import traceback
 
@@ -753,6 +753,7 @@ class AsyncEngineCore:
         config: Optional[EngineConfig] = None,
     ):
         self.engine = EngineCore(model, tokenizer, config)
+        self._start_task: Optional[asyncio.Task] = None
 
     async def __aenter__(self) -> "AsyncEngineCore":
         await self.engine.start()
@@ -763,7 +764,7 @@ class AsyncEngineCore:
 
     def start(self) -> None:
         """Start engine (creates task in current loop)."""
-        asyncio.create_task(self.engine.start())
+        self._start_task = asyncio.create_task(self.engine.start())
 
     async def stop(self) -> None:
         """Stop the engine."""
