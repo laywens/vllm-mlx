@@ -41,6 +41,7 @@ class TestNativeToolFormatCapability:
             LiquidAIToolParser,
             HermesToolParser,
             Glm47ToolParser,
+            QwenToolParser,
         ]
         for parser_cls in native_parsers:
             assert (
@@ -53,7 +54,6 @@ class TestNativeToolFormatCapability:
     def test_parsers_without_native_support(self):
         """Parsers that don't support native tool format should return False."""
         non_native_parsers = [
-            QwenToolParser,
             NemotronToolParser,
             xLAMToolParser,
             AutoToolParser,
@@ -79,6 +79,7 @@ class TestNativeToolFormatCapability:
             "liquidai",
             "hermes",
             "glm47",
+            "qwen",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert (
@@ -86,7 +87,7 @@ class TestNativeToolFormatCapability:
             ), f"Parser '{name}' should support native format"
 
         # No native support
-        for name in ["qwen", "nemotron", "xlam", "auto"]:
+        for name in ["nemotron", "xlam", "auto"]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert (
                 parser_cls.supports_native_format() is False

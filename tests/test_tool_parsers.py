@@ -991,6 +991,37 @@ class TestThinkTagStripping:
         assert result.content == "The answer is 42."
 
 
+class TestQwenToolCallCleanup:
+    """Test Qwen parser native format and wrapper cleanup."""
+
+    def test_qwen_supports_native_format(self):
+        assert QwenToolParser.SUPPORTS_NATIVE_TOOL_FORMAT is True
+        assert QwenToolParser.supports_native_format() is True
+
+    def test_function_style_cleans_wrapper(self):
+        text = (
+            "<tool_call>\n<function=get_weather>"
+            "<parameter=location>Prague</parameter>"
+            "</function>\n</tool_call>"
+        )
+        result = QwenToolParser().extract_tool_calls(text)
+        assert result.tools_called is True
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "get_weather"
+        assert not result.content
+
+    def test_text_before_tool_call_preserved(self):
+        text = (
+            "Let me check the weather.\n"
+            "<tool_call>\n<function=get_weather>"
+            "<parameter=location>Tokyo</parameter>"
+            "</function>\n</tool_call>"
+        )
+        result = QwenToolParser().extract_tool_calls(text)
+        assert result.tools_called is True
+        assert result.content == "Let me check the weather."
+
+
 class TestQwen3CoderParser:
     """Test Qwen3-Coder tool call parsing (Issue #47)."""
 

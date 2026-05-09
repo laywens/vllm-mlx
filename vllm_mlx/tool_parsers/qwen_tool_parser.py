@@ -59,6 +59,8 @@ class QwenToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser qwen are set.
     """
 
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Pattern for XML-style: <tool_call>{"json"}</tool_call>
     XML_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
@@ -70,6 +72,9 @@ class QwenToolParser(ToolParser):
 
     # Pattern for parameter extraction: <parameter=key>value</parameter>
     PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
+
+    # Pattern for empty <tool_call> wrappers left after function extraction.
+    EMPTY_TOOL_CALL = re.compile(r"<tool_call>\s*</tool_call>", re.DOTALL)
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -159,6 +164,7 @@ class QwenToolParser(ToolParser):
                 cleaned_text = self.FUNCTION_PATTERN.sub("", cleaned_text).strip()
 
         if tool_calls:
+            cleaned_text = self.EMPTY_TOOL_CALL.sub("", cleaned_text).strip()
             return ExtractedToolCallInformation(
                 tools_called=True,
                 tool_calls=tool_calls,
