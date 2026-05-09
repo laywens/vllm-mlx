@@ -5,7 +5,7 @@
 | Command | Description |
 |---------|-------------|
 | `vllm-mlx serve` | Start OpenAI-compatible server |
-| `vllm-mlx model` | Inspect, acquire, or convert model artifacts |
+| `vllm-mlx model` | Inspect, acquire, convert, or register model artifacts |
 | `vllm-mlx-bench` | Run performance benchmarks |
 | `vllm-mlx-chat` | Start Gradio chat interface |
 
@@ -138,10 +138,10 @@ curl http://localhost:8000/v1/models \
 
 ## `vllm-mlx model`
 
-Inspect, acquire, and convert model artifacts without serving them. These
+Inspect, acquire, convert, and register model artifacts without serving them. These
 commands are intended to make model setup auditable: inspect before download,
-download into a finalized artifact manifest, then convert through `mlx-lm` with
-the exact recipe recorded.
+download into a finalized artifact manifest, convert through `mlx-lm` with the
+exact recipe recorded, then write a portable registration manifest.
 
 ### Usage
 
@@ -149,6 +149,7 @@ the exact recipe recorded.
 vllm-mlx model inspect <path-or-hf-model-id>
 vllm-mlx model acquire <hf-model-id> [--target-dir <path>]
 vllm-mlx model convert <path-or-hf-model-id> --output <path> [--quantize]
+vllm-mlx model register <artifact-path> [--model-id <id>]
 ```
 
 ### Options
@@ -167,6 +168,13 @@ vllm-mlx model convert <path-or-hf-model-id> --output <path> [--quantize]
 | `convert` | `--quant-predicate` | `mlx-lm` mixed-bit quantization recipe |
 | `convert` | `--dtype` | Dtype for non-quantized parameters |
 | `convert` | `--dry-run` | Print command and manifest without executing conversion |
+| `register` | `--model-id` | Override model ID, otherwise the artifact directory name is used |
+| `register` | `--served-model-name` | Model name exposed by the API |
+| `register` | `--preset-alias` | Optional alias for preset lookup |
+| `register` | `--mllm`, `--no-mllm` | Mark multimodal or text-only serving intent |
+| `register` | `--tool-call-parser`, `--reasoning-parser` | Parser policy to record |
+| `register` | `--default-*` | Serving defaults to record in the manifest |
+| `register` | `--feature-flag` | Repeatable feature flag entry |
 
 ### Examples
 
@@ -179,6 +187,10 @@ vllm-mlx model acquire mlx-community/Llama-3.2-3B-Instruct-4bit \
 vllm-mlx model convert meta-llama/Llama-3.2-3B-Instruct \
   --output ./models/llama-3b-mlx-q4 \
   --quantize --q-bits 4 --q-group-size 64 --q-mode affine
+
+vllm-mlx model register ./models/llama-3b-mlx-q4 \
+  --model-id llama-3b-mlx-q4 \
+  --no-mllm
 ```
 
 ## `vllm-mlx-bench`

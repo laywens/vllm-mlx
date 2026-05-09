@@ -3,7 +3,7 @@
 
 The functions in this module intentionally avoid loading model weights. They
 collect repository/file metadata, download artifacts, and record manifests so a
-model can be qualified before it is served.
+model can be audited before it is served.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from .utils.download import LLM_ALLOW_PATTERNS, MLLM_ALLOW_PATTERNS
 
 MODEL_MANIFEST_NAME = "vllm_mlx_model_manifest.json"
 CONVERSION_MANIFEST_NAME = "vllm_mlx_conversion_manifest.json"
+REGISTRATION_MANIFEST_NAME = "vllm_mlx_registration_manifest.json"
 
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -58,6 +59,28 @@ class ConversionOptions:
     dtype: str | None = None
     trust_remote_code: bool = False
     dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class RegistrationOptions:
+    """Options for generating a portable model registration manifest."""
+
+    artifact_path: str
+    model_id: str | None = None
+    served_model_name: str | None = None
+    preset_alias: str | None = None
+    output_path: str | None = None
+    mllm: bool | None = None
+    tool_call_parser: str | None = None
+    reasoning_parser: str | None = None
+    default_temperature: float | None = None
+    default_top_p: float | None = None
+    default_top_k: int | None = None
+    default_min_p: float | None = None
+    default_presence_penalty: float | None = None
+    default_repetition_penalty: float | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
+    feature_flags: list[str] | None = None
 
 
 def _now_iso() -> str:
@@ -485,3 +508,81 @@ def convert_model(options: ConversionOptions) -> dict[str, Any]:
     _write_json(manifest_path, result)
     result["manifest_path"] = str(manifest_path)
     return result
+
+
+def _existing_manifests(path: Path) -> dict[str, Any]:
+    manifests: dict[str, Any] = {}
+    for name, key in (
+        (MODEL_MANIFEST_NAME, "acquisition"),
+        (CONVERSION_MANIFEST_NAME, "conversion"),
+    ):
+        manifest_path = path / name
+        if manifest_path.exists():
+            manifests[key] = {
+                "path": str(manifest_path),
+                "payload": _read_json(manifest_path),
+            }
+    return manifests
+
+
+def _drop_none(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def register_model(options: RegistrationOptions) -> dict[str, Any]:
+    """Write a portable registration manifest for a finalized local artifact.
+
+    This deliberately does not mutate a production registry. The manifest is a
+    handoff artifact that Ops or a deployment tool can apply after qualification.
+    """
+    artifact = Path(options.artifact_path).expanduser()
+    if not artifact.exists():
+        raise FileNotFoundError(f"artifact path does not exist: {artifact}")
+    if not artifact.is_dir():
+        raise NotADirectoryError(f"artifact path must be a directory: {artifact}")
+
+    inspection = inspect_model(str(artifact))
+    model_id = options.model_id or artifact.name
+    serving_defaults = _drop_none(
+        {
+            "temperature": options.default_temperature,
+            "top_p": options.default_top_p,
+            "top_k": options.default_top_k,
+            "min_p": options.default_min_p,
+            "presence_penalty": options.default_presence_penalty,
+            "repetition_penalty": options.default_repetition_penalty,
+            "chat_template_kwargs": options.chat_template_kwargs,
+        }
+    )
+    parser_policy = _drop_none(
+        {
+            "tool_call_parser": options.tool_call_parser,
+            "reasoning_parser": options.reasoning_parser,
+        }
+    )
+    payload = {
+        "kind": "vllm-mlx-model-registration",
+        "schema_version": 1,
+        "created_at": _now_iso(),
+        "model_id": model_id,
+        "served_model_name": options.served_model_name or model_id,
+        "preset_alias": options.preset_alias,
+        "artifact_path": str(artifact),
+        "mllm": options.mllm,
+        "feature_flags": options.feature_flags or [],
+        "serving_defaults": serving_defaults,
+        "parser_policy": parser_policy,
+        "inspection": inspection,
+        "source_manifests": _existing_manifests(artifact),
+        "qualification_required": True,
+        "production_ready": False,
+    }
+
+    output = (
+        Path(options.output_path).expanduser()
+        if options.output_path
+        else artifact / REGISTRATION_MANIFEST_NAME
+    )
+    _write_json(output, payload)
+    payload["manifest_path"] = str(output)
+    return payload

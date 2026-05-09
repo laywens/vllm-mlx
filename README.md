@@ -85,6 +85,10 @@ vllm-mlx model acquire mlx-community/Llama-3.2-3B-Instruct-4bit \
 vllm-mlx model convert meta-llama/Llama-3.2-3B-Instruct \
   --output ./models/llama-3b-mlx-q4 \
   --quantize --q-bits 4 --q-group-size 64 --q-mode affine
+
+vllm-mlx model register ./models/llama-3b-mlx-q4 \
+  --model-id llama-3b-mlx-q4 \
+  --no-mllm
 ```
 
 ## Serving Profiles

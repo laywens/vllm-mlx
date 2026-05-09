@@ -13,11 +13,14 @@ from vllm_mlx import cli
 from vllm_mlx.model_workflow import (
     CONVERSION_MANIFEST_NAME,
     MODEL_MANIFEST_NAME,
+    REGISTRATION_MANIFEST_NAME,
     AcquisitionOptions,
     ConversionOptions,
+    RegistrationOptions,
     acquire_model,
     convert_model,
     inspect_model,
+    register_model,
 )
 
 
@@ -252,6 +255,121 @@ def test_inspect_gptq_model_is_not_detected_as_mlx(tmp_path):
     assert payload["mlx"]["needs_conversion"] is True
 
 
+def test_register_model_writes_manifest_from_artifact(tmp_path):
+    artifact = tmp_path / "mlx-model"
+    artifact.mkdir()
+    (artifact / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "quantization": {"bits": 4}})
+    )
+    (artifact / MODEL_MANIFEST_NAME).write_text(
+        json.dumps({"kind": "vllm-mlx-model-artifact", "model_id": "org/model"})
+    )
+
+    payload = register_model(
+        RegistrationOptions(
+            artifact_path=str(artifact),
+            model_id="qwen-test",
+            served_model_name="qwen-test-served",
+            preset_alias="fast-qwen",
+            mllm=True,
+            tool_call_parser="qwen3_coder",
+            reasoning_parser="qwen3",
+            default_temperature=0.6,
+            default_top_p=0.95,
+            default_top_k=20,
+            default_min_p=0.0,
+            default_presence_penalty=0.0,
+            default_repetition_penalty=1.0,
+            chat_template_kwargs={"enable_thinking": True},
+            feature_flags=["prefix_cache"],
+        )
+    )
+
+    assert payload["kind"] == "vllm-mlx-model-registration"
+    assert payload["model_id"] == "qwen-test"
+    assert payload["served_model_name"] == "qwen-test-served"
+    assert payload["preset_alias"] == "fast-qwen"
+    assert payload["mllm"] is True
+    assert payload["production_ready"] is False
+    assert payload["qualification_required"] is True
+    assert payload["serving_defaults"]["top_k"] == 20
+    assert payload["serving_defaults"]["chat_template_kwargs"] == {
+        "enable_thinking": True
+    }
+    assert payload["parser_policy"]["reasoning_parser"] == "qwen3"
+    assert payload["source_manifests"]["acquisition"]["payload"]["model_id"] == (
+        "org/model"
+    )
+    assert (artifact / REGISTRATION_MANIFEST_NAME).exists()
+
+
+def test_register_model_minimal_defaults(tmp_path):
+    """register_model with only artifact_path derives model_id from directory name."""
+    artifact = tmp_path / "my-cool-model"
+    artifact.mkdir()
+    (artifact / "config.json").write_text(
+        json.dumps({"model_type": "llama", "quantization": {"bits": 4}})
+    )
+
+    payload = register_model(RegistrationOptions(artifact_path=str(artifact)))
+
+    assert payload["model_id"] == "my-cool-model"
+    assert payload["served_model_name"] == "my-cool-model"
+    assert payload["preset_alias"] is None
+    assert payload["mllm"] is None
+    assert payload["serving_defaults"] == {}
+    assert payload["parser_policy"] == {}
+    assert payload["feature_flags"] == []
+    assert payload["qualification_required"] is True
+    assert (artifact / REGISTRATION_MANIFEST_NAME).exists()
+
+
+def test_register_model_requires_local_directory(tmp_path):
+    missing = tmp_path / "missing"
+
+    try:
+        register_model(RegistrationOptions(artifact_path=str(missing)))
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError("expected FileNotFoundError")
+
+
+def test_register_model_rejects_file_as_artifact(tmp_path):
+    """register_model raises NotADirectoryError for a file path."""
+    file_path = tmp_path / "not-a-dir.safetensors"
+    file_path.write_bytes(b"weights")
+
+    try:
+        register_model(RegistrationOptions(artifact_path=str(file_path)))
+    except NotADirectoryError:
+        pass
+    else:
+        raise AssertionError("expected NotADirectoryError")
+
+
+def test_drop_none_preserves_zero_and_false_values():
+    """_drop_none must keep 0, 0.0, and False -- only drop None."""
+    from vllm_mlx.model_workflow import _drop_none
+
+    result = _drop_none(
+        {
+            "temperature": 0.0,
+            "top_k": 0,
+            "presence_penalty": 0.0,
+            "enabled": False,
+            "missing": None,
+        }
+    )
+    assert result == {
+        "temperature": 0.0,
+        "top_k": 0,
+        "presence_penalty": 0.0,
+        "enabled": False,
+    }
+    assert "missing" not in result
+
+
 def test_cli_model_inspect_command_prints_json(monkeypatch, capsys):
     def fake_inspect(model, *, revision=None, local_files_only=False):
         return {
@@ -310,3 +428,48 @@ def test_cli_model_convert_failure_exits_once(monkeypatch, capsys):
     assert excinfo.value.code == 7
     printed = capsys.readouterr().out.strip().splitlines()
     assert len([line for line in printed if '"status": "failed"' in line]) == 1
+
+
+def test_cli_model_register_command_prints_manifest(monkeypatch, capsys):
+    def fake_register(options):
+        return {
+            "model_id": options.model_id,
+            "artifact_path": options.artifact_path,
+            "mllm": options.mllm,
+            "defaults": {
+                "temperature": options.default_temperature,
+                "top_p": options.default_top_p,
+            },
+        }
+
+    monkeypatch.setattr("vllm_mlx.model_workflow.register_model", fake_register)
+
+    cli.model_command(
+        SimpleNamespace(
+            model_command="register",
+            artifact="/tmp/model",
+            model_id="qwen-test",
+            served_model_name=None,
+            preset_alias=None,
+            output=None,
+            mllm=False,
+            tool_call_parser=None,
+            reasoning_parser=None,
+            default_temperature=0.0,
+            default_top_p=1.0,
+            default_top_k=None,
+            default_min_p=None,
+            default_presence_penalty=None,
+            default_repetition_penalty=None,
+            default_chat_template_kwargs=None,
+            feature_flag=[],
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "model_id": "qwen-test",
+        "artifact_path": "/tmp/model",
+        "mllm": False,
+        "defaults": {"temperature": 0.0, "top_p": 1.0},
+    }
