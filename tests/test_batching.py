@@ -204,6 +204,87 @@ class TestSchedulerBatchGeneratorCompatibility:
 
         assert isinstance(batch_generator, FakeBatchGenerator)
 
+    def test_chunked_prefill_accepts_prompt_checkpoints_tuple_and_max_kv_size(
+        self, monkeypatch
+    ):
+        import importlib
+
+        import mlx.core as mx
+
+        import vllm_mlx.scheduler as scheduler_module
+
+        generate_module = importlib.import_module("mlx_lm.generate")
+        captured_make_cache = {}
+
+        class FakeCacheEntry:
+            def empty(self):
+                return True
+
+        class FakePromptCache:
+            state = mx.array([0])
+
+            def finalize(self):
+                pass
+
+        class FakeBatchGenerator:
+            active_batch = None
+            completion_batch_size = 1
+            prefill_batch_size = 1
+
+            def __init__(self):
+                self.unprocessed_prompts = [
+                    (
+                        7,
+                        [1, 2, 3],
+                        8,
+                        [FakeCacheEntry()],
+                        "sampler",
+                        "logits_processor",
+                        "prompt_checkpoint",
+                    )
+                ]
+                self._stats = SimpleNamespace(
+                    prompt_tokens=0,
+                    prompt_time=0.0,
+                    generation_time=0.0,
+                )
+                self.model = lambda *_args, **_kwargs: None
+                self.max_kv_size = 64
+                self.prompt_progress_callback = lambda *_args, **_kwargs: None
+
+            def _next(self):
+                raise AssertionError("original _next should not be used")
+
+            def remove(self, _uids):
+                pass
+
+            def _process_prompts(self, _prompts):
+                raise AssertionError("direct prompt processing should not be used")
+
+        def fake_make_cache(model, left_padding, max_kv_size):
+            captured_make_cache["args"] = (model, left_padding, max_kv_size)
+            return [FakePromptCache()]
+
+        monkeypatch.setattr(generate_module, "_make_cache", fake_make_cache)
+        monkeypatch.setattr(
+            generate_module,
+            "Batch",
+            lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            generate_module,
+            "_left_pad_prompts",
+            lambda prompts, max_length: mx.array([prompts[0]]),
+        )
+
+        batch_generator = FakeBatchGenerator()
+        scheduler_module._install_chunked_prefill(batch_generator, budget=1)
+
+        assert batch_generator._next() == []
+        assert captured_make_cache["args"][2] == 64
+        assert batch_generator._partial["uids"] == [7]
+
 
 class TestEngineExecutorAffinity:
     """Tests for thread-stable scheduler stepping in EngineCore."""
