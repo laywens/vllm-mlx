@@ -9,6 +9,7 @@ from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
     FunctionaryToolParser,
+    Glm47ToolParser,
     GraniteToolParser,
     HermesToolParser,
     KimiToolParser,
@@ -1020,6 +1021,60 @@ class TestQwenToolCallCleanup:
         result = QwenToolParser().extract_tool_calls(text)
         assert result.tools_called is True
         assert result.content == "Let me check the weather."
+
+
+class TestGLM47ToolParser:
+    """Tests for GLM47 tool parser."""
+
+    def test_zero_arguments_tool_call(self):
+        """Handle zero-argument tool calls without crashing."""
+        parser = Glm47ToolParser()
+        result = parser.extract_tool_calls("<tool_call>get_current_time</tool_call>")
+
+        assert result.tools_called is True
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "get_current_time"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {}
+
+    def test_with_arguments(self):
+        """Parse GLM argument key/value pairs."""
+        parser = Glm47ToolParser()
+        output = (
+            "<tool_call>search\n"
+            "<arg_key>query</arg_key><arg_value>Python</arg_value>"
+            "</tool_call>"
+        )
+
+        result = parser.extract_tool_calls(output)
+
+        assert result.tools_called is True
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "search"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["query"] == "Python"
+
+    def test_streaming_zero_args(self):
+        """Streaming should detect zero-argument tool calls."""
+        parser = Glm47ToolParser()
+        chunks = ["<tool_call>", "get_status", "</tool_call>"]
+        accumulated = ""
+        tool_calls_found = False
+
+        for chunk in chunks:
+            prev = accumulated
+            accumulated += chunk
+            result = parser.extract_tool_calls_streaming(
+                previous_text=prev,
+                current_text=accumulated,
+                delta_text=chunk,
+            )
+            if result is not None and "tool_calls" in result:
+                tool_calls_found = True
+                assert result["tool_calls"][0]["function"]["name"] == "get_status"
+                args = json.loads(result["tool_calls"][0]["function"]["arguments"])
+                assert args == {}
+
+        assert tool_calls_found
 
 
 class TestQwen3CoderParser:
