@@ -577,6 +577,16 @@ class TestContentToText:
         ]
         assert _content_to_text(parts) == "Hello\nWorld"
 
+    def test_list_of_model_parts_omits_none_text_values(self):
+        class FakeTextPart:
+            def model_dump(self, exclude_none=False):
+                data = {"type": "text", "text": None}
+                if exclude_none:
+                    data = {k: v for k, v in data.items() if v is not None}
+                return data
+
+        assert _content_to_text([FakeTextPart()]) == ""
+
     def test_list_of_dicts(self):
         parts = [
             {"type": "text", "text": "foo"},
@@ -590,6 +600,18 @@ class TestContentToText:
 
     def test_empty_list(self):
         assert _content_to_text([]) == ""
+
+    def test_extract_multimodal_dict_fallback_ignores_none_values(self):
+        class FakeImagePart:
+            def dict(self):
+                return {"type": "image", "image": None, "url": "fallback.png"}
+
+        messages = [{"role": "user", "content": [FakeImagePart()]}]
+        processed, images, videos = extract_multimodal_content(messages)
+
+        assert processed == [{"role": "user", "content": ""}]
+        assert images == ["fallback.png"]
+        assert videos == []
 
 
 class TestGptOssSpecialTokens:

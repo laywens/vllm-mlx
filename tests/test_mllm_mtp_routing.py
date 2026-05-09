@@ -104,6 +104,24 @@ def test_has_media_content_text_list():
     assert _has_media_content(messages) is False
 
 
+def test_extract_media_from_pydantic_like_parts_omits_none_values():
+    from vllm_mlx.engine.batched import _extract_media_from_messages
+
+    class FakeImagePart:
+        def model_dump(self, exclude_none=False):
+            assert exclude_none is True
+            data = {"type": "image", "image": None, "url": "fallback.png"}
+            return {k: v for k, v in data.items() if v is not None}
+
+    has_media, images, videos = _extract_media_from_messages(
+        [{"role": "user", "content": [FakeImagePart()]}]
+    )
+
+    assert has_media is True
+    assert images == ["fallback.png"]
+    assert videos == []
+
+
 # --- MLXMultimodalLM extraction method tests ---
 
 from unittest.mock import MagicMock
