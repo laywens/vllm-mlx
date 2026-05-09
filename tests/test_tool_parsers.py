@@ -198,6 +198,39 @@ class TestQwenToolParser:
 
         assert not result.tools_called
 
+    def test_function_format_with_parameters(self, parser):
+        """Test Qwen3.5-style <function=name> parameter blocks."""
+        text = "<function=get_weather><parameter=city>Prague</parameter></function>"
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get_weather"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["city"] == "Prague"
+
+    def test_function_format_with_json(self, parser):
+        """Test Qwen3.5-style <function=name> JSON bodies."""
+        text = '<function=get_weather>{"city": "Prague"}</function>'
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get_weather"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["city"] == "Prague"
+
+    def test_multiple_function_format_calls(self, parser):
+        """Test multiple Qwen3.5-style function blocks."""
+        text = (
+            '<function=read_file>{"path": "/a.py"}</function>'
+            '<function=write_file>{"path": "/b.py", "content": "hello"}</function>'
+        )
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 2
+        assert result.tool_calls[0]["name"] == "read_file"
+        assert result.tool_calls[1]["name"] == "write_file"
+
 
 class TestLlamaToolParser:
     """Test the Llama tool parser."""
@@ -841,6 +874,61 @@ class TestQwenStreamingBoundaries:
         assert "tool_calls" in emitted
         assert emitted["tool_calls"][0]["function"]["name"] == "add"
         assert emitted["tool_calls"][0]["function"]["arguments"] == '{"a": 1, "b": 2}'
+
+    def test_streaming_function_marker_buffers_safe_prefix(self):
+        """Qwen should buffer split <function markers without losing text."""
+        parser = QwenToolParser()
+
+        emitted = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text="Before <function",
+            delta_text="Before <function",
+        )
+
+        assert emitted == {"content": "Before "}
+
+    def test_streaming_false_positive_functional_recovers_text(self):
+        """Buffered <function prefixes should recover when not tool markup."""
+        parser = QwenToolParser()
+
+        parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text="Look at <function",
+            delta_text="Look at <function",
+        )
+        emitted = parser.extract_tool_calls_streaming(
+            previous_text="Look at <function",
+            current_text="Look at <functional interface",
+            delta_text="al interface",
+        )
+
+        assert emitted == {"content": "<functional interface"}
+
+    def test_streaming_function_format_complete(self):
+        """Qwen function blocks should stream as structured tool calls."""
+        parser = QwenToolParser()
+        chunks = [
+            "<function=get_weather>",
+            "<parameter=city>Prague</parameter>",
+            "</function>",
+        ]
+
+        accumulated = ""
+        emitted = None
+        for chunk in chunks:
+            previous = accumulated
+            accumulated += chunk
+            emitted = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=accumulated,
+                delta_text=chunk,
+            )
+
+        assert emitted is not None
+        assert "tool_calls" in emitted
+        assert emitted["tool_calls"][0]["function"]["name"] == "get_weather"
+        args = json.loads(emitted["tool_calls"][0]["function"]["arguments"])
+        assert args["city"] == "Prague"
 
 
 class TestThinkTagStripping:

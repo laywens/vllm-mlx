@@ -375,6 +375,96 @@ class TestHelperFunctions:
         assert tool_payloads[0]["choices"][0]["finish_reason"] == "tool_calls"
 
     @pytest.mark.anyio
+    async def test_qwen_parser_streams_split_function_tool_calls(self, monkeypatch):
+        """Split <function markers should not leak into streamed content."""
+        from vllm_mlx.engine.base import GenerationOutput
+        from vllm_mlx.server import (
+            ChatCompletionRequest,
+            Message,
+            stream_chat_completion,
+        )
+        import vllm_mlx.server as server
+
+        class FakeEngine:
+            model_name = "fake-engine"
+
+            async def stream_chat(self, messages, **kwargs):
+                del messages, kwargs
+                chunks = [
+                    "Before <function",
+                    '=read_file>{"path": "/tmp/test.py"}</function>',
+                ]
+                for index, text in enumerate(chunks, start=1):
+                    yield GenerationOutput(
+                        text=text,
+                        new_text=text,
+                        finished=index == len(chunks),
+                        finish_reason="stop" if index == len(chunks) else None,
+                        prompt_tokens=4,
+                        completion_tokens=index,
+                    )
+
+        monkeypatch.setattr(server, "_model_name", "served-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+        monkeypatch.setattr(server, "_enable_auto_tool_choice", True)
+        monkeypatch.setattr(server, "_tool_call_parser", "qwen")
+        monkeypatch.setattr(server, "_tool_parser_instance", None)
+
+        request = ChatCompletionRequest(
+            model="served-model",
+            messages=[Message(role="user", content="hi")],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+            stream=True,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in stream_chat_completion(
+                FakeEngine(), request.messages, request, request_id="test-request"
+            )
+        ]
+
+        payloads = [
+            json.loads(chunk.removeprefix("data: ").strip())
+            for chunk in chunks
+            if chunk != "data: [DONE]\n\n"
+        ]
+        text = "".join(
+            payload["choices"][0]["delta"].get("content") or ""
+            for payload in payloads
+            if payload["choices"]
+        )
+        tool_payloads = [
+            payload
+            for payload in payloads
+            if payload["choices"] and payload["choices"][0]["delta"].get("tool_calls")
+        ]
+
+        assert "<function" not in text
+        assert "</function>" not in text
+        assert text == "Before "
+        assert len(tool_payloads) == 1
+        assert (
+            tool_payloads[0]["choices"][0]["delta"]["tool_calls"][0]["function"][
+                "name"
+            ]
+            == "read_file"
+        )
+
+    @pytest.mark.anyio
     async def test_anthropic_stream_message_delta_includes_input_tokens(self, monkeypatch):
         """Anthropic streaming usage should include prompt token accounting."""
         from vllm_mlx.api.anthropic_models import AnthropicMessage, AnthropicRequest

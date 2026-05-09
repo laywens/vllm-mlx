@@ -188,9 +188,12 @@ _VIDEO_MAX_INPUTS_PER_REQUEST = 4
 _STRUCTURED_OUTPUT_MIN_MAX_TOKENS = 120
 _STREAMING_TOOL_MARKERS = (
     "<tool_call>",
+    "<tool_call",
     "<|tool_call>",
     "<function=",
+    "<function",
     "[Calling tool:",
+    "[Calling tool",
     "[TOOL_CALLS]",
     "<minimax:tool_call>",
     '<invoke name="',
