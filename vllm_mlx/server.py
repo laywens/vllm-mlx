@@ -48,6 +48,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import threading
@@ -183,6 +184,18 @@ _VIDEO_FPS_MAX = 8.0
 _VIDEO_MAX_FRAMES_MAX = 128
 _VIDEO_MAX_INPUTS_PER_REQUEST = 4
 _STRUCTURED_OUTPUT_MIN_MAX_TOKENS = 120
+_STREAMING_TOOL_MARKERS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    "[Calling tool:",
+    "[TOOL_CALLS]",
+    "<minimax:tool_call>",
+    '<invoke name="',
+)
+_STREAMING_BARE_BRACKET_MARKER = re.compile(r"\[\w+\(\{")
+_STREAMING_BARE_BRACKET_PARTIAL = re.compile(r"\[\w+\($")
+_STREAMING_TOOL_MARKUP_SCAN_CHARS = 512
 
 
 def _sanitize_log_text(value: object, limit: int | None = None) -> str:
@@ -1553,6 +1566,25 @@ def _apply_tool_call_spray_policy_to_deltas(
             deduped = [deduped[0]]
 
     return [_normalize_tool_call_delta(tc, index=i) for i, tc in enumerate(deduped)]
+
+
+def _streaming_tool_markup_possible(text: str) -> bool:
+    """Heuristic marker check to avoid parser work on ordinary text chunks."""
+    return (
+        any(marker in text for marker in _STREAMING_TOOL_MARKERS)
+        or _STREAMING_BARE_BRACKET_MARKER.search(text) is not None
+        or _STREAMING_BARE_BRACKET_PARTIAL.search(text) is not None
+    )
+
+
+def _streaming_tool_markup_possible_after_delta(
+    accumulated_text: str, delta_text: str
+) -> bool:
+    """Check the bounded boundary window needed for newly appearing tool markup."""
+    if not delta_text:
+        return False
+    check_text = accumulated_text[-_STREAMING_TOOL_MARKUP_SCAN_CHARS:] + delta_text
+    return _streaming_tool_markup_possible(check_text)
 
 
 def _parse_tool_calls_with_mitigation(
@@ -5237,8 +5269,14 @@ async def stream_chat_completion(
         if not tool_parser or not content_delta:
             return content_delta, None, False
 
-        # Fast path: avoid parser scans until tool markup starts.
-        if not tool_markup_possible and "<" not in content_delta:
+        # Fast path: avoid parser scans until tool markup starts, including
+        # bracket-form tool calls that do not contain '<'.
+        if (
+            not tool_markup_possible
+            and not _streaming_tool_markup_possible_after_delta(
+                tool_accumulated_text, content_delta
+            )
+        ):
             tool_accumulated_text += content_delta
             return content_delta, None, False
 

@@ -133,9 +133,9 @@ class QwenToolParser(ToolParser):
         if not has_tool_marker:
             return {"content": delta_text}
 
-        # If we're in a tool call, accumulate and parse at the end
-        # For simplicity, return None during accumulation
-        if "</tool_call>" in delta_text or ")]" in delta_text:
+        # If we're in a tool call, accumulate and parse at the end. Check the
+        # accumulated text because closing markers often split across chunks.
+        if "</tool_call>" in current_text or ")]" in current_text:
             # Tool call complete, parse the whole thing
             result = self.extract_tool_calls(current_text)
             if result.tools_called:

@@ -598,6 +598,16 @@ class TestAutoToolParser:
         assert result.tools_called
         assert result.tool_calls[0]["name"] == "add"
 
+    def test_detects_bare_bracket(self, parser):
+        """Test auto detection of bare bracket format."""
+        text = '[read({"file_path": "/tmp/test.py"})]'
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "read"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["file_path"] == "/tmp/test.py"
+
     def test_detects_llama(self, parser):
         """Test auto detection of Llama format."""
         text = '<function=multiply>{"x": 2}</function>'
@@ -640,6 +650,23 @@ class TestAutoToolParser:
         result = parser.extract_tool_calls(text)
 
         assert not result.tools_called
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Read [the docs](https://example.test) before changing this.",
+            "The output array was [1, 2, 3], not a tool call.",
+            'Here is JSON: [{"label": "alpha", "score": 0.7}]',
+            "Use [square brackets] for optional text.",
+            "This prose mentions [read(file_path)] without JSON arguments.",
+        ],
+    )
+    def test_no_false_positive_for_ordinary_bracket_text(self, parser, text):
+        """Ordinary bracket text should remain content, not auto tool calls."""
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.content == text
 
 
 class TestEdgeCases:
@@ -738,6 +765,82 @@ class TestStreamingParsing:
             delta_text="Hello world",
         )
         assert result == {"content": "Hello world"}
+
+    def test_auto_streaming_bare_bracket(self):
+        """Auto parser should emit structured tool calls for bare bracket streaming."""
+        parser = AutoToolParser()
+
+        chunks = [
+            "[read(",
+            '{"file_path": "/tmp/test.py"}',
+            ")]",
+        ]
+        accumulated = ""
+        emitted = None
+
+        for chunk in chunks:
+            previous = accumulated
+            accumulated += chunk
+            emitted = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=accumulated,
+                delta_text=chunk,
+            )
+
+        assert emitted is not None
+        assert "tool_calls" in emitted
+        assert emitted["tool_calls"][0]["function"]["name"] == "read"
+        args = json.loads(emitted["tool_calls"][0]["function"]["arguments"])
+        assert args["file_path"] == "/tmp/test.py"
+
+    @pytest.mark.parametrize(
+        "delta",
+        [
+            "See [the docs](https://example.test)",
+            "Values: [1, 2, 3]",
+            'JSON data: [{"label": "alpha"}]',
+            "Literal [square brackets] in text",
+        ],
+    )
+    def test_auto_streaming_ordinary_brackets_emit_content(self, delta):
+        """Auto streaming should not suppress ordinary bracket text."""
+        parser = AutoToolParser()
+
+        result = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=delta,
+            delta_text=delta,
+        )
+
+        assert result == {"content": delta}
+
+
+class TestQwenStreamingBoundaries:
+    """Test Qwen parser streaming boundary handling."""
+
+    def test_streaming_bracket_call_closing_marker_split(self):
+        """Qwen bracket calls should complete when ')' and ']' split chunks."""
+        parser = QwenToolParser()
+        chunks = [
+            '[Calling tool: add({"a": 1, "b": 2})',
+            "]",
+        ]
+
+        accumulated = ""
+        emitted = None
+        for chunk in chunks:
+            previous = accumulated
+            accumulated += chunk
+            emitted = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=accumulated,
+                delta_text=chunk,
+            )
+
+        assert emitted is not None
+        assert "tool_calls" in emitted
+        assert emitted["tool_calls"][0]["function"]["name"] == "add"
+        assert emitted["tool_calls"][0]["function"]["arguments"] == '{"a": 1, "b": 2}'
 
 
 class TestThinkTagStripping:
