@@ -1950,6 +1950,7 @@ class Scheduler:
             request.prompt_cache = None
             request._extracted_cache = None
         self.finished_req_ids.add(request_id)
+        self._cleanup_detokenizer(request_id)
 
         # Flush Metal encoders after removing arrays from batch
         mx.clear_cache()
@@ -2395,6 +2396,7 @@ class Scheduler:
             aborted_ids.add(request_id)
             self.finished_req_ids.add(request_id)
         self.running.clear()
+        self._detokenizer_pool.clear()
 
         # Clear UID mappings (batch generator is gone)
         self.request_id_to_uid.clear()
@@ -2683,6 +2685,7 @@ class Scheduler:
         self.finished_req_ids.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._detokenizer_pool.clear()
         self._close_batch_generator()
         self._current_sampler_params = None
 

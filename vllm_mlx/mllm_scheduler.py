@@ -365,6 +365,7 @@ class MLLMScheduler:
         request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
         self.requests.pop(request_id, None)
+        self._detokenizer_pool.pop(request_id, None)
 
         # Signal output queue
         if request_id in self.output_queues:
@@ -477,17 +478,21 @@ class MLLMScheduler:
             request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
 
-            # Decode the new token using streaming detokenizer (UTF-8 safe)
-            if request_id not in self._detokenizer_pool:
-                if hasattr(tokenizer, "detokenizer"):
-                    detok = tokenizer.detokenizer
-                else:
-                    detok = NaiveStreamingDetokenizer(tokenizer)
-                detok.reset()
-                self._detokenizer_pool[request_id] = detok
-            detok = self._detokenizer_pool[request_id]
-            detok.add_token(response.token)
-            new_text = detok.last_segment
+            # Decode the new token using streaming detokenizer (UTF-8 safe).
+            # Skip stop tokens — they are not content.
+            if response.finish_reason == "stop":
+                new_text = ""
+            else:
+                if request_id not in self._detokenizer_pool:
+                    if hasattr(tokenizer, "detokenizer"):
+                        detok = tokenizer.detokenizer
+                    else:
+                        detok = NaiveStreamingDetokenizer(tokenizer)
+                    detok.reset()
+                    self._detokenizer_pool[request_id] = detok
+                detok = self._detokenizer_pool[request_id]
+                detok.add_token(response.token)
+                new_text = detok.last_segment
 
             # Create output
             output = RequestOutput(
@@ -843,6 +848,7 @@ class MLLMScheduler:
         self.finished_req_ids.clear()
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
+        self._detokenizer_pool.clear()
 
         if self.batch_generator is not None:
             self.batch_generator.close()

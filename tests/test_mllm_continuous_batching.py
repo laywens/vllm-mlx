@@ -338,6 +338,93 @@ class TestMLLMSchedulerAbortMetrics:
         assert scheduler.total_prompt_tokens == 5
         assert scheduler.total_completion_tokens == 3
 
+    def test_abort_running_request_cleans_detokenizer(self):
+        from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+        from vllm_mlx.request import RequestStatus
+
+        scheduler = MLLMScheduler(model=object(), processor=object())
+        request = MLLMRequest(request_id="req-1", prompt="Hello")
+        request.status = RequestStatus.RUNNING
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+        scheduler._detokenizer_pool[request.request_id] = object()
+
+        assert scheduler.abort_request(request.request_id) is True
+        assert request.request_id not in scheduler._detokenizer_pool
+
+    def test_reset_clears_detokenizer_pool(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+
+        scheduler = MLLMScheduler(model=object(), processor=object())
+        scheduler._detokenizer_pool["orphan"] = object()
+
+        scheduler.reset()
+
+        assert scheduler._detokenizer_pool == {}
+
+
+class TestMLLMSchedulerDetokenizer:
+    """Tests for MLLM streaming detokenizer behavior."""
+
+    def test_stop_token_is_not_emitted_as_new_text(self):
+        import mlx.core as mx
+
+        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from vllm_mlx.mllm_scheduler import MLLMRequest, MLLMScheduler
+        from vllm_mlx.request import RequestStatus
+
+        class FakeDetokenizer:
+            def reset(self):
+                self.last_segment = ""
+                self.text = ""
+
+            def add_token(self, token):
+                self.last_segment = f"<{token}>"
+                self.text += self.last_segment
+
+            def finalize(self):
+                pass
+
+        class FakeTokenizer:
+            eos_token_id = 0
+            eos_token_ids = None
+
+            @property
+            def detokenizer(self):
+                return FakeDetokenizer()
+
+            def decode(self, tokens):
+                return "".join(f"<{token}>" for token in tokens)
+
+        class FakeProcessor:
+            tokenizer = FakeTokenizer()
+
+        scheduler = MLLMScheduler(model=object(), processor=FakeProcessor())
+        request = MLLMRequest(request_id="req-1", prompt="Hello")
+        request.status = RequestStatus.RUNNING
+        request.num_prompt_tokens = 1
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+        scheduler.request_id_to_uid[request.request_id] = 7
+        scheduler.uid_to_request_id[7] = request.request_id
+
+        outputs, finished_ids = scheduler._process_batch_responses(
+            [
+                MLLMBatchResponse(
+                    uid=7,
+                    request_id=request.request_id,
+                    token=0,
+                    logprobs=mx.array([0.0]),
+                    finish_reason="stop",
+                )
+            ]
+        )
+
+        assert finished_ids == {request.request_id}
+        assert outputs[0].new_text == ""
+
 
 class TestMLLMSchedulerVideoParams:
     """Tests for video parameter propagation in scheduler request state."""

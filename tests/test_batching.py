@@ -641,6 +641,52 @@ class TestSchedulerBasic:
         assert scheduler.total_prompt_tokens == 3
         assert scheduler.total_completion_tokens == 2
 
+    def test_abort_running_request_cleans_detokenizer(
+        self, mock_model, mock_tokenizer
+    ):
+        """Aborted requests should not leave streaming detokenizers alive."""
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+        )
+
+        request = Request(
+            request_id="test-1",
+            prompt="Hello world",
+            sampling_params=SamplingParams(),
+        )
+        request.status = RequestStatus.RUNNING
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+        scheduler._detokenizer_pool[request.request_id] = object()
+
+        scheduler._do_abort_request(request.request_id)
+
+        assert request.request_id not in scheduler._detokenizer_pool
+
+    def test_generation_error_recovery_clears_detokenizers(
+        self, mock_model, mock_tokenizer
+    ):
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+        )
+
+        request = Request(
+            request_id="test-1",
+            prompt="Hello",
+            sampling_params=SamplingParams(),
+        )
+        request.status = RequestStatus.RUNNING
+        scheduler.running[request.request_id] = request
+        scheduler._detokenizer_pool[request.request_id] = object()
+        scheduler._detokenizer_pool["orphan"] = object()
+
+        scheduler._recover_from_generation_error()
+
+        assert scheduler._detokenizer_pool == {}
+
     def test_abort_nonexistent_request(self, mock_model, mock_tokenizer):
         """Test aborting non-existent request (deferred abort always enqueues)."""
         scheduler = Scheduler(
@@ -690,6 +736,17 @@ class TestSchedulerBasic:
         assert scheduler.get_num_waiting() == 0
         assert scheduler.get_num_running() == 0
         assert not scheduler.has_requests()
+
+    def test_reset_clears_detokenizer_pool(self, mock_model, mock_tokenizer):
+        scheduler = Scheduler(
+            model=mock_model,
+            tokenizer=mock_tokenizer,
+        )
+        scheduler._detokenizer_pool["orphan"] = object()
+
+        scheduler.reset()
+
+        assert scheduler._detokenizer_pool == {}
 
 
 # Integration tests require actual MLX model
