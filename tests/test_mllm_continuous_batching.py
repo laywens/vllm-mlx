@@ -447,6 +447,86 @@ class TestMLLMSchedulerDetokenizer:
         scheduler.abort_request.assert_not_called()
 
 
+class TestPreprocessIdempotent:
+    def test_text_only_request_with_input_ids_is_not_preprocessed_twice(self):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+        )
+
+        req = MLLMBatchRequest(
+            uid=0,
+            request_id="req-idem",
+            prompt="Hello",
+        )
+        req.input_ids = mx.array([[1, 2, 3]])
+
+        gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+
+        gen._preprocess_request(req)
+
+        assert req.input_ids.shape == (1, 3)
+
+    def test_vision_request_with_input_ids_is_still_preprocessed(self):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+        )
+
+        req = MLLMBatchRequest(
+            uid=0,
+            request_id="req-vision",
+            prompt="Describe",
+            images=["fake.png"],
+        )
+        req.input_ids = mx.array([[1, 2, 3]])
+
+        gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+
+        with pytest.raises(Exception):
+            gen._preprocess_request(req)
+
+    @pytest.mark.asyncio
+    async def test_process_loop_preprocesses_text_requests_before_step(
+        self, monkeypatch
+    ):
+        import vllm_mlx.mllm_scheduler as scheduler_mod
+        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+
+        req = MLLMBatchRequest(
+            uid=0,
+            request_id="req-loop",
+            prompt="Hello",
+        )
+
+        class FakeBatchGenerator:
+            unprocessed_requests = [req]
+
+            def _preprocess_request(self, request):
+                request.input_ids = object()
+
+        scheduler = MLLMScheduler.__new__(MLLMScheduler)
+        scheduler._running = True
+        scheduler.batch_generator = FakeBatchGenerator()
+        step_saw_preprocessed = []
+
+        scheduler.has_requests = lambda: True
+
+        def step():
+            step_saw_preprocessed.append(req.input_ids is not None)
+            scheduler._running = False
+
+        scheduler.step = step
+        monkeypatch.setattr(
+            scheduler_mod, "bind_generation_streams", lambda: None, raising=False
+        )
+
+        await scheduler._process_loop()
+
+        assert step_saw_preprocessed == [True]
+
+
 class TestMLLMSchedulerVideoParams:
     """Tests for video parameter propagation in scheduler request state."""
 

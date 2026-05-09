@@ -521,11 +521,16 @@ class MLLMBatchGenerator:
         2. Tokenizing the prompt with image tokens
         3. Running vision encoder to get features
 
-        Uses vision cache to skip processing for repeated images.
+        Uses vision cache to skip processing for repeated images. Text-only
+        requests are idempotent so scheduler-side early preprocessing is not
+        repeated inside _process_prompts().
 
         Args:
             request: Request to preprocess
         """
+        if request.input_ids is not None and not request.images and not request.videos:
+            return
+
         from mlx_vlm.utils import prepare_inputs
 
         tic = time.perf_counter()

@@ -36,6 +36,7 @@ from .mllm_batch_generator import (
     MLLMBatchResponse,
 )
 from .mllm_cache import MLLMCacheManager
+from .mlx_streams import bind_generation_streams
 from .multimodal_processor import MultimodalProcessor
 from .request import RequestOutput, RequestStatus, SamplingParams
 
@@ -655,14 +656,68 @@ class MLLMScheduler:
         logger.info("MLLM Scheduler stopped")
 
     async def _process_loop(self) -> None:
-        """Main async processing loop."""
+        """Main async processing loop.
+
+        MLLM model execution remains on the event-loop thread, but text-only
+        preprocessing can run in a worker so long prompt tokenization does not
+        block health checks, disconnect polling, or active streams.
+        """
+        streams_bound = False
+
+        def _ensure_streams_bound() -> None:
+            nonlocal streams_bound
+            if not streams_bound:
+                bind_generation_streams()
+                streams_bound = True
+
+        loop = asyncio.get_running_loop()
+
         while self._running:
             try:
+                bg = self.batch_generator
+                if bg is not None:
+                    for req in list(getattr(bg, "unprocessed_requests", ())):
+                        if (
+                            req.input_ids is None
+                            and not req.images
+                            and not req.videos
+                        ):
+                            try:
+                                tic = time.perf_counter()
+                                await loop.run_in_executor(
+                                    None, bg._preprocess_request, req
+                                )
+                                elapsed = time.perf_counter() - tic
+                                if elapsed > 1.0:
+                                    n_tokens = (
+                                        req.input_ids.size
+                                        if req.input_ids is not None
+                                        else 0
+                                    )
+                                    logger.info(
+                                        f"Preprocessing {req.request_id[:12]}: "
+                                        f"{n_tokens} tokens in {elapsed:.2f}s"
+                                    )
+                            except Exception as e:
+                                logger.error(
+                                    f"Early preprocessing failed for "
+                                    f"{req.request_id}: {e}"
+                                )
+
                 if self.has_requests():
-                    # Run one step
+                    _ensure_streams_bound()
+                    tic = time.perf_counter()
                     self.step()
-                    # Yield to other tasks
-                    await asyncio.sleep(0)
+                    elapsed = time.perf_counter() - tic
+                    if elapsed > 2.0:
+                        logger.warning(
+                            f"Slow MLLM step: {elapsed:.2f}s "
+                            f"(waiting={len(self.waiting)}, "
+                            f"running={len(self.running)})"
+                        )
+                    n_yields = 10 if elapsed > 1.0 else 5
+                    for _ in range(n_yields):
+                        await asyncio.sleep(0)
                 else:
                     # No work, wait a bit
                     await asyncio.sleep(0.01)
@@ -670,7 +725,7 @@ class MLLMScheduler:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"Error in MLLM process loop: {e}")
+                logger.error(f"Error in MLLM process loop: {e}", exc_info=True)
                 await asyncio.sleep(0.1)
 
     async def add_request_async(
