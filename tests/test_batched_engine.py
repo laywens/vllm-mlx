@@ -126,3 +126,35 @@ class TestToolCallReplayNormalization:
         assert normalized[0]["tool_calls"][0]["function"]["arguments"] == {
             "value": ["not", "object"]
         }
+
+
+class TestBatchedEngineChatTemplate:
+    """Tests for batched chat template selection."""
+
+    def test_mllm_falls_back_to_tokenizer_when_processor_has_no_template(self):
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        with patch("vllm_mlx.engine.batched.is_mllm_model", return_value=True):
+            engine = BatchedEngine("test-mllm-model")
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = "prompt-from-tokenizer"
+
+        processor = MagicMock()
+        processor.tokenizer = tokenizer
+        processor.apply_chat_template.side_effect = ValueError(
+            "Cannot use apply_chat_template because this processor does not "
+            "have a chat template."
+        )
+
+        engine._is_mllm = True
+        engine._processor = processor
+
+        prompt = engine._apply_chat_template(
+            [{"role": "user", "content": "Hello"}],
+            enable_thinking=False,
+        )
+
+        assert prompt == "prompt-from-tokenizer"
+        processor.apply_chat_template.assert_called_once()
+        tokenizer.apply_chat_template.assert_called_once()

@@ -441,10 +441,28 @@ class BatchedEngine(BaseEngine):
             if tool_choice is not None:
                 template_kwargs["tool_choice"] = tool_choice
 
+            tokenizer_applicator = None
+            tokenizer = self.tokenizer
+            if template_applicator is not tokenizer and hasattr(
+                tokenizer, "apply_chat_template"
+            ):
+                tokenizer_applicator = tokenizer
+
             try:
                 return template_applicator.apply_chat_template(
                     messages, **template_kwargs
                 )
+            except ValueError as e:
+                # Some HF processors expose apply_chat_template but do not
+                # carry a template. Retry on the tokenizer when available.
+                if (
+                    tokenizer_applicator is not None
+                    and "does not have a chat template" in str(e)
+                ):
+                    return tokenizer_applicator.apply_chat_template(
+                        messages, **template_kwargs
+                    )
+                raise
             except TypeError as e:
                 # Some templates don't accept 'tools'; retry without them.
                 logger.debug(f"Chat template TypeError, retrying without extras: {e}")
