@@ -140,6 +140,7 @@ class EngineCore:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        self.scheduler._close_batch_generator()
         logger.info("Engine stopped")
 
     def is_running(self) -> bool:
@@ -376,12 +377,17 @@ class EngineCore:
                     await asyncio.sleep(step_interval)
 
             except asyncio.CancelledError:
+                _executor.shutdown(wait=True)
+                self.scheduler._close_batch_generator()
                 raise
             except Exception as e:
                 import traceback
 
                 logger.error(f"Engine loop error: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.1)
+
+        _executor.shutdown(wait=True)
+        self.scheduler._close_batch_generator()
 
     async def add_request(
         self,
