@@ -465,8 +465,8 @@ def save_base64_image(base64_string: str) -> str:
     """Save base64 image to temp file and return path. Caches identical images."""
     import hashlib
 
-    # Hash the base64 string to check cache
-    image_hash = hashlib.md5(base64_string[:1000].encode()).hexdigest()
+    # Hash the full payload so images with identical headers cannot collide.
+    image_hash = hashlib.sha256(base64_string.encode()).hexdigest()
 
     # Return cached path if available and file still exists
     if image_hash in _base64_image_cache:

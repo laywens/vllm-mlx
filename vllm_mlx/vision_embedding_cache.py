@@ -106,9 +106,9 @@ def compute_image_hash(image_path: str) -> str:
     try:
         path = Path(image_path)
         if path.exists() and path.is_file():
-            # Hash file content (first 64KB for speed)
+            # Hash full file content; image headers are often identical.
             with open(path, "rb") as f:
-                content = f.read(65536)
+                content = f.read()
             return hashlib.sha256(content).hexdigest()[:16]
         else:
             # Hash the string (URL or base64)

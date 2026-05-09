@@ -3,6 +3,7 @@
 
 import platform
 import sys
+import base64
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,21 @@ class TestMLLMHelperFunctions:
         assert is_url("http://example.com/video.mp4")
         assert not is_url("/path/to/file.jpg")
         assert not is_url("data:image/png;base64,AAAA")
+
+    def test_base64_image_cache_uses_full_payload_hash(self):
+        """Different base64 payloads sharing a prefix should not reuse cache paths."""
+        from vllm_mlx.models import mllm
+
+        mllm._base64_image_cache.clear()
+        common_prefix = base64.b64encode(b"a" * 750).decode("ascii")
+        image_one = common_prefix + base64.b64encode(b"one").decode("ascii")
+        image_two = common_prefix + base64.b64encode(b"two").decode("ascii")
+
+        path_one = mllm.save_base64_image(image_one)
+        path_two = mllm.save_base64_image(image_two)
+
+        assert path_one != path_two
+        assert Path(path_one).read_bytes() != Path(path_two).read_bytes()
 
 
 class TestVideoFrameExtraction:
