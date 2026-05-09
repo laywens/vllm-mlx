@@ -173,6 +173,37 @@ class TestSchedulerBatchGeneratorCompatibility:
             is generation_batch
         )
 
+    def test_skips_chunked_prefill_when_batch_generator_lacks_private_internals(
+        self, monkeypatch
+    ):
+        import vllm_mlx.scheduler as scheduler_module
+
+        class FakeBatchGenerator:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class TokenizerStub:
+            eos_token_id = 2
+            eos_token_ids = None
+
+        def fail_install(*_args, **_kwargs):
+            raise AssertionError("chunked prefill should be skipped")
+
+        monkeypatch.setattr(scheduler_module, "BatchGenerator", FakeBatchGenerator)
+        monkeypatch.setattr(scheduler_module, "make_sampler", lambda **kwargs: "sampler")
+        monkeypatch.setattr(scheduler_module, "_install_chunked_prefill", fail_install)
+
+        scheduler = scheduler_module.Scheduler(
+            model=MagicMock(),
+            tokenizer=TokenizerStub(),
+            config=scheduler_module.SchedulerConfig(enable_prefix_cache=False),
+        )
+        scheduler.memory_aware_cache = object()
+
+        batch_generator = scheduler._create_batch_generator(SamplingParams(max_tokens=32))
+
+        assert isinstance(batch_generator, FakeBatchGenerator)
+
 
 class TestEngineExecutorAffinity:
     """Tests for thread-stable scheduler stepping in EngineCore."""

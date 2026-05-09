@@ -1357,7 +1357,15 @@ class Scheduler:
         # in agentic multi-turn workloads with hybrid Mamba+Transformer models).
         chunked_budget = self.config.chunked_prefill_tokens
         need_chunked = chunked_budget > 0 or self.memory_aware_cache is not None
-        if need_chunked:
+
+        # The chunked prefill monkey-patch relies on BatchGenerator private
+        # internals that are absent in newer mlx-lm releases. Skip gracefully
+        # when those internals are not available.
+        chunked_compatible = hasattr(bg, "_process_prompts") and hasattr(
+            bg, "active_batch"
+        )
+
+        if need_chunked and chunked_compatible:
             if chunked_budget <= 0:
                 # No explicit budget — use a very large value so normal
                 # prompts pass through unchanged.  Prefix boundary splits
@@ -1380,6 +1388,11 @@ class Scheduler:
                 uid_to_request_id=self.uid_to_request_id,
                 requests=self.requests,
                 default_repetition_policy=self.config.repetition_policy,
+            )
+        elif need_chunked and not chunked_compatible:
+            logger.warning(
+                "Chunked prefill disabled: mlx-lm BatchGenerator lacks required "
+                "internals (_process_prompts, active_batch)."
             )
 
         # Install MTP if the model supports it
