@@ -141,17 +141,21 @@ class MLLMBatch:
         self.max_tokens.extend(other.max_tokens)
         self.requests.extend(other.requests)
 
-        # Extend cache - handle None and incompatible caches
+        # Extend cache - handle None and incompatible caches. Some cache
+        # integrations expose state only through empty()/extend() and do not
+        # publish .keys.
         for c, o in zip(self.cache, other.cache):
             if c is not None and o is not None and hasattr(c, "extend"):
                 try:
-                    # Only extend if both caches have valid keys
-                    if (
+                    has_kv = (
                         hasattr(c, "keys")
                         and c.keys is not None
                         and hasattr(o, "keys")
                         and o.keys is not None
-                    ):
+                    )
+                    has_arrays = hasattr(c, "cache")
+                    has_extendable_state = hasattr(c, "empty") and not c.empty()
+                    if has_kv or has_arrays or has_extendable_state:
                         c.extend(o)
                 except Exception as e:
                     logger.warning(f"Failed to extend cache: {e}")
