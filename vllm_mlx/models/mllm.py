@@ -777,6 +777,7 @@ class MLXMultimodalLM:
         trust_remote_code: bool = False,
         enable_cache: bool = True,
         cache_size: int = 50,
+        max_kv_size: int = 0,
     ):
         """
         Initialize the MLX multimodal language model.
@@ -786,10 +787,12 @@ class MLXMultimodalLM:
             trust_remote_code: Whether to trust remote code
             enable_cache: Enable KV cache for repeated image/video+prompt (default: True)
             cache_size: Maximum cache entries (default: 50)
+            max_kv_size: Maximum KV cache size per sequence (0 = unbounded)
         """
         self.model_name = model_name
         self.trust_remote_code = trust_remote_code
         self.enable_cache = enable_cache
+        self.max_kv_size = max(0, int(max_kv_size or 0))
 
         self.model = None
         self.processor = None
@@ -1267,7 +1270,10 @@ class MLXMultimodalLM:
         # Create new cache if needed
         if prompt_cache is None and self.model is not None:
             try:
-                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+                prompt_cache = vlm_cache.make_prompt_cache(
+                    self.model.language_model,
+                    max_kv_size=self.max_kv_size or None,
+                )
             except Exception:
                 prompt_cache = None
 
@@ -1709,7 +1715,10 @@ class MLXMultimodalLM:
         if prompt_cache is None and self.model is not None:
             # Create fresh cache
             try:
-                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+                prompt_cache = vlm_cache.make_prompt_cache(
+                    self.model.language_model,
+                    max_kv_size=self.max_kv_size or None,
+                )
             except Exception:
                 prompt_cache = None
 
@@ -2042,7 +2051,10 @@ class MLXMultimodalLM:
         # Create new cache if needed
         if prompt_cache is None and self.model is not None:
             try:
-                prompt_cache = vlm_cache.make_prompt_cache(self.model.language_model)
+                prompt_cache = vlm_cache.make_prompt_cache(
+                    self.model.language_model,
+                    max_kv_size=self.max_kv_size or None,
+                )
             except Exception:
                 prompt_cache = None
 

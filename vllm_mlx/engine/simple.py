@@ -63,6 +63,7 @@ class SimpleEngine(BaseEngine):
         specprefill_threshold: int = 8192,
         specprefill_keep_pct: float = 0.3,
         specprefill_draft_model: str | None = None,
+        max_kv_size: int = 0,
     ):
         """
         Initialize the simple engine.
@@ -78,6 +79,7 @@ class SimpleEngine(BaseEngine):
             specprefill_threshold: Minimum suffix tokens to trigger SpecPrefill
             specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
             specprefill_draft_model: Path to small draft model for importance scoring
+            max_kv_size: Maximum KV cache size per sequence (0 = unbounded)
         """
         self._model_name = model_name
         self._trust_remote_code = trust_remote_code
@@ -85,6 +87,7 @@ class SimpleEngine(BaseEngine):
         self._is_mllm = force_mllm or is_mllm_model(model_name)
         self._mtp = mtp
         self._prefill_step_size = prefill_step_size
+        self._max_kv_size = max(0, int(max_kv_size or 0))
 
         # SpecPrefill config
         self._specprefill_enabled = specprefill_enabled
@@ -361,6 +364,7 @@ class SimpleEngine(BaseEngine):
                 self._model_name,
                 trust_remote_code=self._trust_remote_code,
                 enable_cache=self._enable_cache,
+                max_kv_size=self._max_kv_size,
             )
         else:
             from ..models.llm import MLXLanguageModel
@@ -975,7 +979,10 @@ class SimpleEngine(BaseEngine):
                     sparse_prefill,
                 )
 
-                cache = make_prompt_cache(model)
+                cache = make_prompt_cache(
+                    model,
+                    max_kv_size=self._max_kv_size or None,
+                )
 
                 try:
                     # Phase 1: Score with draft model
@@ -1231,7 +1238,10 @@ class SimpleEngine(BaseEngine):
                         and system_token_count == self._system_kv_token_count
                     ):
                         # Cache HIT — restore KV state into fresh backbone cache
-                        backbone_cache = make_prompt_cache(self._text_model)
+                        backbone_cache = make_prompt_cache(
+                            self._text_model,
+                            max_kv_size=self._max_kv_size or None,
+                        )
                         for i, saved_state in enumerate(self._system_kv_snapshot):
                             backbone_cache[i].state = saved_state
 
@@ -1330,7 +1340,10 @@ class SimpleEngine(BaseEngine):
                     and system_tokens is not None
                     and suffix_tokens is not None
                 ):
-                    mc = make_prompt_cache(model)
+                    mc = make_prompt_cache(
+                        model,
+                        max_kv_size=self._max_kv_size or None,
+                    )
                     sys_arr = mx.array(system_tokens)
 
                     # Prefill system tokens in chunks (matching generate_step)
@@ -1417,7 +1430,10 @@ class SimpleEngine(BaseEngine):
 
                 # Create backbone cache if not already from system KV
                 if bc is None:
-                    bc = make_prompt_cache(model)
+                    bc = make_prompt_cache(
+                        model,
+                        max_kv_size=self._max_kv_size or None,
+                    )
 
                 try:
                     # Phase 1: Score with draft model

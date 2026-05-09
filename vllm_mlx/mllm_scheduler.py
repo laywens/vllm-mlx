@@ -65,6 +65,12 @@ class MLLMSchedulerConfig:
     default_video_fps: float = 2.0
     # Maximum video frames
     max_video_frames: int = 128
+    # Maximum KV cache size per sequence (0 = unbounded; >0 enables RotatingKVCache)
+    max_kv_size: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_kv_size < 0:
+            raise ValueError("max_kv_size must be >= 0")
 
 
 @dataclass
@@ -262,6 +268,7 @@ class MLLMScheduler:
                 prefill_batch_size=self.config.prefill_batch_size,
                 completion_batch_size=self.config.completion_batch_size,
                 prefill_step_size=self.config.prefill_step_size,
+                max_kv_size=self.config.max_kv_size,
             )
 
     # ========== Sync API (step-based) ==========

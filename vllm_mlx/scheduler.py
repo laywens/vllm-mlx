@@ -35,8 +35,12 @@ try:
     _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK = (
         "prompt_progress_callback" in inspect.signature(BatchGenerator).parameters
     )
+    _BATCH_GENERATOR_SUPPORTS_MAX_KV_SIZE = (
+        "max_kv_size" in inspect.signature(BatchGenerator).parameters
+    )
 except (TypeError, ValueError):
     _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK = False
+    _BATCH_GENERATOR_SUPPORTS_MAX_KV_SIZE = False
 
 # Enable MambaCache batching support for models like Nemotron
 ensure_mamba_support()
@@ -218,6 +222,9 @@ class SchedulerConfig:
     # 0 = disabled. Only effective when chunked_prefill_tokens > 0.
     mid_prefill_save_interval: int = 8192
 
+    # Maximum KV cache size per sequence (0 = unbounded; >0 enables RotatingKVCache)
+    max_kv_size: int = 0
+
     # MTP (Multi-Token Prediction) settings
     # Uses the model's built-in MTP head to predict multiple tokens per step
     enable_mtp: bool = False
@@ -236,6 +243,8 @@ class SchedulerConfig:
     def __post_init__(self) -> None:
         if self.mllm_prefill_step_size is not None and self.mllm_prefill_step_size <= 0:
             raise ValueError("mllm_prefill_step_size must be > 0 when provided")
+        if self.max_kv_size < 0:
+            raise ValueError("max_kv_size must be >= 0")
         self.repetition_policy = _normalize_repetition_policy(self.repetition_policy)
 
 
@@ -1349,6 +1358,10 @@ class Scheduler:
             "completion_batch_size": self.config.completion_batch_size,
             "prefill_step_size": self.config.prefill_step_size,
         }
+        if _BATCH_GENERATOR_SUPPORTS_MAX_KV_SIZE:
+            batch_generator_kwargs["max_kv_size"] = (
+                self.config.max_kv_size if self.config.max_kv_size > 0 else None
+            )
         if _BATCH_GENERATOR_SUPPORTS_PROMPT_PROGRESS_CALLBACK:
             batch_generator_kwargs["prompt_progress_callback"] = _prefill_progress
 
@@ -2010,6 +2023,14 @@ class Scheduler:
             else:
                 tokens_to_process = request.prompt_token_ids
             cache_to_use = request.prompt_cache  # May be None
+
+            if cache_to_use is None and self.config.max_kv_size > 0:
+                from mlx_lm.models.cache import make_prompt_cache
+
+                cache_to_use = make_prompt_cache(
+                    self.model,
+                    max_kv_size=self.config.max_kv_size,
+                )
 
             # Validate cache before using it
             if cache_to_use is not None and not self._validate_cache(cache_to_use):

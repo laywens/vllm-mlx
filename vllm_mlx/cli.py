@@ -352,6 +352,9 @@ def serve_command(args):
     if args.max_request_tokens < 1:
         print("Error: --max-request-tokens must be at least 1")
         sys.exit(1)
+    if args.max_kv_size is not None and args.max_kv_size < 1:
+        print("Error: --max-kv-size must be at least 1 when provided")
+        sys.exit(1)
     if args.max_tokens > args.max_request_tokens:
         print("Error: --max-tokens cannot exceed --max-request-tokens")
         sys.exit(1)
@@ -571,6 +574,8 @@ def serve_command(args):
     print(f"Loading model: {args.model}")
     print(f"Default max tokens: {args.max_tokens}")
     print(f"Max request tokens: {args.max_request_tokens}")
+    if args.max_kv_size is not None:
+        print(f"Max KV size: {args.max_kv_size} (RotatingKVCache)")
 
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
@@ -618,6 +623,7 @@ def serve_command(args):
             mllm_prefill_step_size=(
                 args.mllm_prefill_step_size if args.mllm_prefill_step_size > 0 else None
             ),
+            max_kv_size=args.max_kv_size or 0,
         )
 
         print("Mode: Continuous batching (for multiple concurrent users)")
@@ -708,6 +714,7 @@ def serve_command(args):
         specprefill_threshold=args.specprefill_threshold,
         specprefill_keep_pct=args.specprefill_keep_pct,
         specprefill_draft_model=args.specprefill_draft_model,
+        max_kv_size=args.max_kv_size,
     )
 
     # Start server
@@ -1224,6 +1231,15 @@ Examples:
         type=int,
         default=1,
         help="Tokens to batch before streaming (1=smooth, higher=throughput)",
+    )
+    serve_parser.add_argument(
+        "--max-kv-size",
+        type=int,
+        default=None,
+        help=(
+            "Maximum KV cache size per sequence. When set, uses RotatingKVCache "
+            "to bound memory at the cost of evicting early context."
+        ),
     )
     serve_parser.add_argument(
         "--max-tokens",

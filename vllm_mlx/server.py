@@ -1926,6 +1926,7 @@ def load_model(
     specprefill_threshold: int = 8192,
     specprefill_keep_pct: float = 0.3,
     specprefill_draft_model: str = None,
+    max_kv_size: int | None = None,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -1950,6 +1951,7 @@ def load_model(
         specprefill_threshold: Minimum suffix tokens to trigger SpecPrefill (default: 8192)
         specprefill_keep_pct: Fraction of tokens to keep (default: 0.3)
         specprefill_draft_model: Path to small draft model for SpecPrefill scoring
+        max_kv_size: Maximum KV cache size per sequence (None/0 = unbounded)
     """
     global _engine, _model_name, _model_path, _default_max_tokens
     global _max_request_tokens, _tool_parser_instance
@@ -1974,6 +1976,18 @@ def load_model(
 
     if force_mllm:
         logger.info("Force MLLM mode enabled via --mllm flag")
+
+    resolved_max_kv_size = (
+        max_kv_size if max_kv_size is not None and max_kv_size > 0 else 0
+    )
+
+    if resolved_max_kv_size > 0:
+        if scheduler_config is None:
+            from .scheduler import SchedulerConfig
+
+            scheduler_config = SchedulerConfig(max_kv_size=resolved_max_kv_size)
+        else:
+            scheduler_config.max_kv_size = resolved_max_kv_size
 
     if use_batching:
         logger.info(f"Loading model with BatchedEngine: {model_name}")
@@ -2006,6 +2020,7 @@ def load_model(
             specprefill_threshold=specprefill_threshold,
             specprefill_keep_pct=specprefill_keep_pct,
             specprefill_draft_model=specprefill_draft_model,
+            max_kv_size=resolved_max_kv_size,
         )
         # Start SimpleEngine synchronously (no background loop)
         # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)

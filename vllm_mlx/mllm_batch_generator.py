@@ -374,6 +374,7 @@ class MLLMBatchGenerator:
         prefill_step_size: int = 1024,
         enable_vision_cache: bool = True,
         vision_cache_size: int = 100,
+        max_kv_size: int = 0,
     ):
         """
         Initialize MLLM batch generator.
@@ -390,10 +391,12 @@ class MLLMBatchGenerator:
             prefill_step_size: Tokens to process per prefill step
             enable_vision_cache: Enable vision embedding caching
             vision_cache_size: Max entries in vision cache
+            max_kv_size: Maximum KV cache size per sequence (0 = unbounded)
         """
         self.model = model
         self.processor = processor
         self.mm_processor = mm_processor
+        self.max_kv_size = max(0, int(max_kv_size or 0))
 
         # Get language model for text generation
         self.language_model = getattr(model, "language_model", model)
@@ -738,7 +741,10 @@ class MLLMBatchGenerator:
 
         for req in requests:
             # Create a fresh KVCache for this request's language model prefill
-            request_cache = make_prompt_cache(self.language_model)
+            request_cache = make_prompt_cache(
+                self.language_model,
+                max_kv_size=self.max_kv_size or None,
+            )
 
             with mx.stream(MLLMBatchGenerator._stream):
                 # Run VLM forward pass — cache= flows through to language_model

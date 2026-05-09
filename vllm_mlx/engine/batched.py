@@ -247,6 +247,7 @@ class BatchedEngine(BaseEngine):
         self._mllm_instance = MLXMultimodalLM(
             self._model_name,
             trust_remote_code=self._trust_remote_code,
+            max_kv_size=getattr(self._scheduler_config, "max_kv_size", 0),
         )
         self._mllm_instance.load()
 
@@ -271,6 +272,7 @@ class BatchedEngine(BaseEngine):
         mllm_prefill_step_size = getattr(
             self._scheduler_config, "mllm_prefill_step_size", None
         )
+        max_kv_size = getattr(self._scheduler_config, "max_kv_size", 0)
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
@@ -279,6 +281,7 @@ class BatchedEngine(BaseEngine):
             prefill_step_size=mllm_prefill_step_size or 1024,
             enable_vision_cache=enable_vision_cache,
             vision_cache_size=vision_cache_size,
+            max_kv_size=max_kv_size,
         )
 
         # Create and start MLLM scheduler
