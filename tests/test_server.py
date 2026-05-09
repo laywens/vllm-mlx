@@ -260,6 +260,17 @@ class TestHelperFunctions:
         assert not is_mllm_model("mlx-community/Mistral-7B-Instruct-4bit")
         assert not is_mllm_model("mlx-community/Qwen2-7B-Instruct-4bit")
 
+    def test_sanitize_log_text_escapes_control_characters(self):
+        """Untrusted log text should not contain raw control characters."""
+        from vllm_mlx.server import _sanitize_log_text
+
+        text = "line1\nline2\r\t\u2028\x1b[31m"
+        sanitized = _sanitize_log_text(text)
+
+        assert sanitized == r"line1\nline2\r\t\u2028\x1b[31m"
+        assert "\n" not in sanitized.replace(r"\n", "")
+        assert "\r" not in sanitized.replace(r"\r", "")
+
     def test_metadata_detection_ignores_weak_qwen_vision_tokens(self, tmp_path):
         """Qwen text checkpoints can carry vision token IDs without vision encoder."""
         from vllm_mlx.api.utils import _metadata_indicates_mllm
@@ -1562,6 +1573,49 @@ class TestMaxTokensLimit:
             await create_anthropic_message(FakeRequest())
 
         assert exc.value.status_code == 400
+
+
+class TestLogAndExceptionSanitization:
+    """Test internal exception logging and public 500 responses."""
+
+    @pytest.mark.anyio
+    async def test_create_embeddings_hides_internal_exception_details(
+        self, monkeypatch, caplog
+    ):
+        from vllm_mlx.server import EmbeddingRequest, create_embeddings
+        import vllm_mlx.server as server
+
+        class ExplodingEmbeddingEngine:
+            def count_tokens(self, texts):
+                raise RuntimeError("boom\nsecret\t\x1b[31m")
+
+        monkeypatch.setattr(server, "_embedding_engine", ExplodingEmbeddingEngine())
+        monkeypatch.setattr(
+            server,
+            "load_embedding_model",
+            lambda *args, **kwargs: None,
+        )
+
+        request = EmbeddingRequest(
+            model="mlx-community/all-MiniLM-L6-v2-4bit",
+            input="hello",
+        )
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(server.HTTPException) as exc:
+                await create_embeddings(request)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == "Embedding generation failed"
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "Embedding generation failed:" in record.getMessage()
+        ]
+        assert messages
+        assert r"boom\nsecret\t\x1b[31m" in messages[0]
+        assert "boom\nsecret" not in messages[0]
 
 
 class TestAPIKeyVerification:

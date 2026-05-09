@@ -177,6 +177,38 @@ _VIDEO_MAX_INPUTS_PER_REQUEST = 4
 _STRUCTURED_OUTPUT_MIN_MAX_TOKENS = 120
 
 
+def _sanitize_log_text(value: object, limit: int | None = None) -> str:
+    """Escape control characters before logging untrusted text."""
+    text = str(value)
+    escaped: list[str] = []
+    for ch in text:
+        if ch == "\n":
+            escaped.append("\\n")
+        elif ch == "\r":
+            escaped.append("\\r")
+        elif ch == "\t":
+            escaped.append("\\t")
+        elif ch.isprintable():
+            escaped.append(ch)
+        else:
+            code = ord(ch)
+            if code <= 0xFF:
+                escaped.append(f"\\x{code:02x}")
+            else:
+                escaped.append(f"\\u{code:04x}")
+
+    sanitized = "".join(escaped)
+    if limit is not None and len(sanitized) > limit:
+        return sanitized[:limit] + "..."
+    return sanitized
+
+
+def _log_and_raise_internal_error(log_prefix: str, exc: Exception, detail: str) -> None:
+    """Log a sanitized exception string and raise a generic 500 response."""
+    logger.error("%s: %s", log_prefix, _sanitize_log_text(exc, limit=500))
+    raise HTTPException(status_code=500, detail=detail)
+
+
 def _resolve_request_max_tokens(request_value: int | None) -> int:
     """Resolve and validate a request's max_tokens budget."""
     if request_value is None:
@@ -1034,7 +1066,10 @@ def _load_prefix_cache_from_disk() -> None:
         else:
             logger.info("[lifespan] No prefix cache entries found on disk")
     except Exception as e:
-        logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
+        logger.warning(
+            "[lifespan] Failed to load cache from disk: %s",
+            _sanitize_log_text(e, limit=500),
+        )
 
 
 def _save_prefix_cache_to_disk() -> None:
@@ -1048,7 +1083,10 @@ def _save_prefix_cache_to_disk() -> None:
         else:
             logger.info("[lifespan] No cache to save")
     except Exception as e:
-        logger.warning(f"[lifespan] Failed to save cache to disk: {e}", exc_info=True)
+        logger.warning(
+            "[lifespan] Failed to save cache to disk: %s",
+            _sanitize_log_text(e, limit=500),
+        )
 
 
 def _get_cache_dir() -> str:
@@ -1648,7 +1686,9 @@ def _parse_tool_calls_with_parser(
             logger.info(f"Initialized tool call parser: {_tool_call_parser}")
         except Exception as e:
             logger.warning(
-                f"Failed to initialize tool parser '{_tool_call_parser}': {e}"
+                "Failed to initialize tool parser '%s': %s",
+                _tool_call_parser,
+                _sanitize_log_text(e, limit=500),
             )
             logger.warning("Falling back to generic parser")
             return _parse_tool_calls_with_mitigation(
@@ -1690,7 +1730,7 @@ def _parse_tool_calls_with_parser(
                 source="fallback-empty",
             )
     except Exception as e:
-        logger.warning(f"Tool parser error: {e}")
+        logger.warning("Tool parser error: %s", _sanitize_log_text(e, limit=500))
         return _parse_tool_calls_with_mitigation(
             output_text,
             request_dict,
@@ -1723,7 +1763,10 @@ def _detect_native_tool_support() -> bool:
         return False
     except Exception as e:
         # Unexpected error during detection
-        logger.warning(f"Failed to detect native tool support: {e}")
+        logger.warning(
+            "Failed to detect native tool support: %s",
+            _sanitize_log_text(e, limit=500),
+        )
         return False
 
 
@@ -3769,8 +3812,11 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Embedding generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _log_and_raise_internal_error(
+            "Embedding generation failed",
+            e,
+            "Embedding generation failed",
+        )
 
 
 # =============================================================================
@@ -3904,8 +3950,11 @@ async def create_transcription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _log_and_raise_internal_error(
+            "Transcription failed",
+            e,
+            "Transcription failed",
+        )
 
 
 @app.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
@@ -3952,8 +4001,11 @@ async def create_speech(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"TTS generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _log_and_raise_internal_error(
+            "TTS generation failed",
+            e,
+            "Speech generation failed",
+        )
 
 
 @app.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
@@ -5148,7 +5200,10 @@ async def stream_chat_completion(
                 _tool_parser_instance = parser_cls(tokenizer)
                 logger.info(f"Initialized tool call parser: {_tool_call_parser}")
             except Exception as e:
-                logger.warning(f"Failed to init tool parser for streaming: {e}")
+                logger.warning(
+                    "Failed to init tool parser for streaming: %s",
+                    _sanitize_log_text(e, limit=500),
+                )
         if _tool_parser_instance is not None:
             tool_parser = _tool_parser_instance
             tool_parser.reset()
@@ -5389,7 +5444,7 @@ async def init_mcp(config_path: str):
         logger.error("MCP SDK not installed. Install with: pip install mcp")
         raise
     except Exception as e:
-        logger.error(f"Failed to initialize MCP: {e}")
+        logger.error("Failed to initialize MCP: %s", _sanitize_log_text(e, limit=500))
         raise
 
 
