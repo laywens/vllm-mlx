@@ -197,7 +197,9 @@ class BatchedEngine(BaseEngine):
         self._is_mllm = force_mllm or is_mllm_model(model_name)
         self._use_prefill_executor = use_prefill_executor
         self._clear_finished_output_cache = clear_finished_output_cache
-        self._finished_output_cache_clear_interval = finished_output_cache_clear_interval
+        self._finished_output_cache_clear_interval = (
+            finished_output_cache_clear_interval
+        )
         self._log_finished_output_cache_clear = log_finished_output_cache_clear
 
         self._model = None
