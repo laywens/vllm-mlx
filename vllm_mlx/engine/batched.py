@@ -264,6 +264,29 @@ class BatchedEngine(BaseEngine):
         self._model = self._mllm_instance.model
         self._processor = self._mllm_instance.processor
 
+        # Match the LLM path's Metal guardrails for MLLM startup.
+        try:
+            import mlx.core as mx
+
+            if mx.metal.is_available():
+                device_info = mx.device_info()
+                max_recommended = device_info.get(
+                    "max_recommended_working_set_size",
+                    device_info.get("memory_size", 0),
+                )
+                if max_recommended > 0:
+                    soft_limit = int(max_recommended * 0.90)
+                    mx.set_memory_limit(soft_limit)
+                    mx.set_cache_limit(32 * 1024 * 1024 * 1024)  # 32GB
+                    logger.info(
+                        f"Metal memory limits set: "
+                        f"allocation_limit={soft_limit / 1e9:.1f}GB "
+                        f"(90% of {max_recommended / 1e9:.1f}GB), "
+                        f"cache_limit=32GB"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to set Metal memory limits: {e}")
+
         # Create MLLM scheduler config with batch generator support
         if self._scheduler_config and hasattr(self._scheduler_config, "max_num_seqs"):
             max_num_seqs = self._scheduler_config.max_num_seqs

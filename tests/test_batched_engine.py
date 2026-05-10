@@ -246,6 +246,20 @@ class TestBatchedEngineMllmStartup:
             "vllm_mlx.mllm_scheduler.MLLMScheduler",
             FakeMLLMScheduler,
         )
+        memory_calls = {}
+        monkeypatch.setattr("mlx.core.metal.is_available", lambda: True)
+        monkeypatch.setattr(
+            "mlx.core.device_info",
+            lambda: {"max_recommended_working_set_size": 1_000_000_000},
+        )
+        monkeypatch.setattr(
+            "mlx.core.set_memory_limit",
+            lambda value: memory_calls.setdefault("memory_limit", value),
+        )
+        monkeypatch.setattr(
+            "mlx.core.set_cache_limit",
+            lambda value: memory_calls.setdefault("cache_limit", value),
+        )
 
         engine = BatchedEngine(
             "test-model",
@@ -270,6 +284,8 @@ class TestBatchedEngineMllmStartup:
         assert captured["model_kwargs"].get("cache_size") == 17
         assert captured["model_kwargs"]["max_kv_size"] == 99
         assert captured["scheduler_config"]["chunked_prefill_tokens"] == 256
+        assert memory_calls["memory_limit"] == 900_000_000
+        assert memory_calls["cache_limit"] == 32 * 1024 * 1024 * 1024
         assert captured["model_loaded"] is True
         assert captured["scheduler_started"] is True
 
