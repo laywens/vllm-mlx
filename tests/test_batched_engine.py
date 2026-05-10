@@ -113,6 +113,29 @@ class TestBatchedEngineAbortRequest:
         assert await engine.abort_request("req-1") is False
 
 
+class TestBatchedEngineStats:
+    """Tests for status/stat promotion from wrapped scheduler components."""
+
+    def test_mllm_batch_generator_stats_are_promoted(self):
+        engine = TestBatchedEngineGenerate()._make_engine(is_mllm=True)
+        engine._mllm_scheduler = SimpleNamespace(
+            get_stats=lambda: {
+                "batch_generator": {
+                    "prompt_tps": 41.5,
+                    "generation_tps": 19.25,
+                },
+                "num_running": 2,
+            }
+        )
+
+        stats = engine.get_stats()
+
+        assert stats["batch_generator"] == {
+            "prompt_tps": 41.5,
+            "generation_tps": 19.25,
+        }
+
+
 class TestToolCallReplayNormalization:
     """Tests for OpenAI tool-call replay normalization before chat templating."""
 

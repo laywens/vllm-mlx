@@ -3670,6 +3670,7 @@ async def status():
 
     stats = _engine.get_stats()
     active_concurrency, peak_concurrency = _concurrency_tracker.snapshot()
+    batch_generator_stats = stats.get("batch_generator") or {}
 
     return {
         "status": "running" if stats.get("running") else "stopped",
@@ -3681,6 +3682,8 @@ async def status():
         "total_requests_processed": stats.get("num_requests_processed", 0),
         "total_prompt_tokens": stats.get("total_prompt_tokens", 0),
         "total_completion_tokens": stats.get("total_completion_tokens", 0),
+        "generation_tps": batch_generator_stats.get("generation_tps", 0),
+        "prompt_tps": batch_generator_stats.get("prompt_tps", 0),
         "metal": {
             "active_memory_gb": stats.get("metal_active_memory_gb"),
             "peak_memory_gb": stats.get("metal_peak_memory_gb"),

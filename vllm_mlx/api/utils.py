@@ -243,6 +243,7 @@ MLLM_METADATA_FILES = [
 
 MLLM_STRONG_CONFIG_KEYS = {
     "vision_config",
+    "audio_config",
     "image_processor_type",
     "video_processor_type",
 }
@@ -279,13 +280,58 @@ MLLM_WEIGHT_PREFIXES = (
     "image_newline.",
 )
 
+MLLM_ARCHITECTURE_KEYWORDS = (
+    "vlforconditional",
+    "vlforcausal",
+    "visionforconditional",
+    "visionforcausal",
+    "multimodalitycausallm",
+    "llava",
+    "idefics",
+    "paligemma",
+    "pixtral",
+    "molmo",
+    "phi3v",
+    "phi4v",
+    "cogvlm",
+    "internvl",
+    "deepseekvl",
+    "mllama",
+    "gemma3forconditional",
+    "gemma4forconditional",
+)
+
+MAX_METADATA_JSON_BYTES = 1 * 1024 * 1024
+
 
 def _load_json_file(path: Path) -> dict | None:
     """Best-effort JSON loader for model metadata files."""
     try:
-        return json.loads(path.read_text())
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        if path.stat().st_size > MAX_METADATA_JSON_BYTES:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+
+
+def _metadata_file_readable(model_dir: Path) -> bool:
+    """Return whether a model directory has any readable metadata file."""
+    return any(
+        _load_json_file(model_dir / name) is not None for name in MLLM_METADATA_FILES
+    )
+
+
+def _architectures_indicate_mllm(architectures: object) -> bool:
+    """Check architecture names for known multimodal model families."""
+    if not isinstance(architectures, list):
+        return False
+    for arch in architectures:
+        if not isinstance(arch, str):
+            continue
+        normalized = arch.lower().replace("_", "")
+        if any(keyword in normalized for keyword in MLLM_ARCHITECTURE_KEYWORDS):
+            return True
+    return False
 
 
 def _metadata_indicates_mllm(model_dir: Path) -> bool:
@@ -302,9 +348,12 @@ def _metadata_indicates_mllm(model_dir: Path) -> bool:
         ):
             return True
         weak_token_hint = any(
-            key in config and config.get(key) is not None for key in MLLM_WEAK_TOKEN_KEYS
+            key in config and config.get(key) is not None
+            for key in MLLM_WEAK_TOKEN_KEYS
         )
         architectures = config.get("architectures")
+        if _architectures_indicate_mllm(architectures):
+            return True
         if isinstance(architectures, list) and any(
             "ConditionalGeneration" in str(arch) for arch in architectures
         ):
@@ -352,12 +401,23 @@ def _metadata_indicates_mllm(model_dir: Path) -> bool:
     return False
 
 
+def _resolve_local_model_metadata_dir(model_name: str) -> Path | None:
+    """Resolve an existing local model path without treating repo IDs as paths."""
+    try:
+        model_path = Path(model_name).expanduser()
+    except (TypeError, ValueError):
+        return None
+    if not model_path.exists():
+        return None
+    return model_path if model_path.is_dir() else model_path.parent
+
+
 @lru_cache(maxsize=128)
 def _resolve_model_metadata_dir(model_name: str, offline: bool = False) -> Path | None:
     """Resolve a model directory containing enough metadata for MLLM detection."""
-    model_path = Path(model_name).expanduser()
-    if model_path.exists():
-        return model_path if model_path.is_dir() else model_path.parent
+    model_path = _resolve_local_model_metadata_dir(model_name)
+    if model_path is not None:
+        return model_path
 
     try:
         return Path(
@@ -383,6 +443,12 @@ def _resolve_model_metadata_dir(model_name: str, offline: bool = False) -> Path 
         return None
 
 
+def _check_legacy_string_patterns(model_name: str) -> bool:
+    """Check legacy substring patterns against the user-provided model name."""
+    model_lower = model_name.lower()
+    return any(pattern.lower() in model_lower for pattern in MLLM_PATTERNS)
+
+
 def is_mllm_model(model_name: str, offline: bool = False) -> bool:
     """
     Check if model name indicates a multimodal language model.
@@ -394,10 +460,14 @@ def is_mllm_model(model_name: str, offline: bool = False) -> bool:
     Returns:
         True if model is detected as MLLM/VLM
     """
-    model_lower = model_name.lower()
-    for pattern in MLLM_PATTERNS:
-        if pattern.lower() in model_lower:
-            return True
+    local_metadata_dir = _resolve_local_model_metadata_dir(model_name)
+    if local_metadata_dir is not None:
+        if _metadata_file_readable(local_metadata_dir):
+            return _metadata_indicates_mllm(local_metadata_dir)
+        return _check_legacy_string_patterns(model_name)
+
+    if _check_legacy_string_patterns(model_name):
+        return True
 
     metadata_dir = _resolve_model_metadata_dir(model_name, offline=offline)
     if metadata_dir is not None:

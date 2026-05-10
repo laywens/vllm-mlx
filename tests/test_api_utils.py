@@ -8,14 +8,12 @@ from vllm_mlx/api/utils.py. No MLX dependency.
 
 import json
 
-import pytest
-
 from vllm_mlx.api.models import ContentPart, ImageUrl, Message
 from vllm_mlx.api.utils import (
     MLLM_PATTERNS,
     SPECIAL_TOKENS_PATTERN,
-    _resolve_model_metadata_dir,
     _content_to_text,
+    _resolve_model_metadata_dir,
     clean_output_text,
     extract_multimodal_content,
     is_mllm_model,
@@ -201,6 +199,62 @@ class TestIsMllmModel:
 
         assert is_mllm_model(str(tmp_path)) is True
 
+    def test_local_text_config_overrides_triggering_path(self, tmp_path):
+        _resolve_model_metadata_dir.cache_clear()
+        model_dir = tmp_path / "qwen3-vl-derived"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3",
+                    "architectures": ["Qwen3ForCausalLM"],
+                }
+            )
+        )
+
+        assert is_mllm_model(str(model_dir)) is False
+        _resolve_model_metadata_dir.cache_clear()
+
+    def test_local_metadata_detects_vlm_architecture_under_neutral_path(self, tmp_path):
+        _resolve_model_metadata_dir.cache_clear()
+        model_dir = tmp_path / "neutral-model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen2_vl",
+                    "architectures": ["Qwen2VLForConditionalGeneration"],
+                }
+            )
+        )
+
+        assert is_mllm_model(str(model_dir)) is True
+        _resolve_model_metadata_dir.cache_clear()
+
+    def test_local_metadata_detects_audio_config(self, tmp_path):
+        _resolve_model_metadata_dir.cache_clear()
+        model_dir = tmp_path / "neutral-audio-model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "custom_audio",
+                    "audio_config": {"sample_rate": 16000},
+                }
+            )
+        )
+
+        assert is_mllm_model(str(model_dir)) is True
+        _resolve_model_metadata_dir.cache_clear()
+
+    def test_local_missing_metadata_falls_back_to_name_patterns(self, tmp_path):
+        _resolve_model_metadata_dir.cache_clear()
+        model_dir = tmp_path / "Qwen3-VL-7B"
+        model_dir.mkdir()
+
+        assert is_mllm_model(str(model_dir)) is True
+        _resolve_model_metadata_dir.cache_clear()
+
     def test_local_metadata_detects_multimodal_processor(self, tmp_path):
         processor_config = {"processor_class": "Qwen3VLProcessor"}
         (tmp_path / "processor_config.json").write_text(json.dumps(processor_config))
@@ -217,7 +271,9 @@ class TestIsMllmModel:
 
         assert is_mllm_model(str(tmp_path)) is True
 
-    def test_remote_metadata_probe_detects_multimodal_model(self, monkeypatch, tmp_path):
+    def test_remote_metadata_probe_detects_multimodal_model(
+        self, monkeypatch, tmp_path
+    ):
         _resolve_model_metadata_dir.cache_clear()
         (tmp_path / "preprocessor_config.json").write_text(
             json.dumps({"processor_class": "Qwen3VLProcessor"})
@@ -225,7 +281,9 @@ class TestIsMllmModel:
 
         calls = []
 
-        def fake_snapshot_download(model_name, allow_patterns=None, local_files_only=False):
+        def fake_snapshot_download(
+            model_name, allow_patterns=None, local_files_only=False
+        ):
             calls.append(
                 {
                     "model_name": model_name,
@@ -235,7 +293,9 @@ class TestIsMllmModel:
             )
             return str(tmp_path)
 
-        monkeypatch.setattr("vllm_mlx.api.utils.snapshot_download", fake_snapshot_download)
+        monkeypatch.setattr(
+            "vllm_mlx.api.utils.snapshot_download", fake_snapshot_download
+        )
 
         assert is_mllm_model("mlx-community/Qwen3.5-27B-4bit") is True
         assert calls[0]["local_files_only"] is True
@@ -245,11 +305,15 @@ class TestIsMllmModel:
         _resolve_model_metadata_dir.cache_clear()
         calls = []
 
-        def fake_snapshot_download(model_name, allow_patterns=None, local_files_only=False):
+        def fake_snapshot_download(
+            model_name, allow_patterns=None, local_files_only=False
+        ):
             calls.append(local_files_only)
             raise FileNotFoundError(model_name)
 
-        monkeypatch.setattr("vllm_mlx.api.utils.snapshot_download", fake_snapshot_download)
+        monkeypatch.setattr(
+            "vllm_mlx.api.utils.snapshot_download", fake_snapshot_download
+        )
 
         assert is_mllm_model("mlx-community/Qwen3.5-27B-4bit", offline=True) is False
         assert calls == [True]

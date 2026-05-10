@@ -2693,6 +2693,37 @@ class TestRouteSecurityCoverage:
         dependency_calls = {dep.call for dep in route.dependant.dependencies}
         assert server.verify_api_key in dependency_calls
 
+    def test_status_exposes_batch_generator_throughput(self, monkeypatch):
+        """Status should surface MLLM batch-generator rates for benchmark monitors."""
+        import asyncio
+        from types import SimpleNamespace
+
+        import vllm_mlx.server as server
+
+        class _DummyEngine:
+            def get_stats(self):
+                return {
+                    "running": True,
+                    "batch_generator": {
+                        "prompt_tps": 88.0,
+                        "generation_tps": 44.0,
+                    },
+                    "requests": [],
+                }
+
+        monkeypatch.setattr(server, "_engine", _DummyEngine())
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(
+            server,
+            "_concurrency_tracker",
+            SimpleNamespace(snapshot=lambda: (0, 0)),
+        )
+
+        result = asyncio.run(server.status())
+
+        assert result["prompt_tps"] == 88.0
+        assert result["generation_tps"] == 44.0
+
     def test_cache_routes_require_auth(self):
         """Cache routes should require API key when auth is enabled."""
         from fastapi.routing import APIRoute

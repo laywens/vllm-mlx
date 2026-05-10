@@ -909,6 +909,16 @@ class BatchedEngine(BaseEngine):
                 "metal_active_memory_gb",
                 "metal_peak_memory_gb",
                 "metal_cache_memory_gb",
+                "memory_aware_cache",
+                "paged_cache",
+                "prefix_cache",
+                "batch_generator",
+                "requests",
+                "num_waiting",
+                "num_running",
+                "num_requests_processed",
+                "total_prompt_tokens",
+                "total_completion_tokens",
             ):
                 if key in mllm_stats:
                     stats[key] = mllm_stats[key]
