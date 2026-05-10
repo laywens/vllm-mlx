@@ -170,6 +170,9 @@ class ChatCompletionRequest(BaseModel):
     # Optional request-level chat-template override for Qwen-style thinking mode.
     # If omitted, the runtime keeps its model-specific default behavior.
     enable_thinking: bool | None = None
+    # Optional tokenizer/processor chat-template kwargs. Server defaults are
+    # merged first, then this request value overrides matching keys.
+    chat_template_kwargs: dict[str, Any] | None = None
     # Trusted-client-only override for repetition detector policy.
     repetition_policy_override: Literal["safe", "strict"] | None = None
     max_tokens: int | None = Field(default=None, gt=0)

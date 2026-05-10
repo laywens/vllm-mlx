@@ -411,6 +411,7 @@ class BatchedEngine(BaseEngine):
         num_images: int = 0,
         num_audios: int = 0,
         enable_thinking: bool | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> str:
         """Apply chat template to messages.
 
@@ -436,6 +437,10 @@ class BatchedEngine(BaseEngine):
             template_applicator = self.tokenizer
 
         if template_applicator is not None:
+            custom_template_keys = set(chat_template_kwargs or ()) - {
+                "tokenize",
+                "add_generation_prompt",
+            }
             # Convert OpenAI image_url content parts to HuggingFace format
             # so the processor can insert the correct media placeholder tokens.
             if self._is_mllm and (num_images > 0 or num_audios > 0):
@@ -446,8 +451,16 @@ class BatchedEngine(BaseEngine):
                 "add_generation_prompt": True,
             }
             resolved_enable_thinking = enable_thinking
-            if not self._is_mllm and resolved_enable_thinking is None:
+            if (
+                not self._is_mllm
+                and resolved_enable_thinking is None
+                and not (
+                    chat_template_kwargs and "enable_thinking" in chat_template_kwargs
+                )
+            ):
                 resolved_enable_thinking = "coder" not in self._model_name.lower()
+            if chat_template_kwargs:
+                template_kwargs.update(chat_template_kwargs)
             if resolved_enable_thinking is not None:
                 template_kwargs["enable_thinking"] = resolved_enable_thinking
             if tools:
@@ -480,7 +493,12 @@ class BatchedEngine(BaseEngine):
             except TypeError as e:
                 # Some templates don't accept 'tools'; retry without them.
                 logger.debug(f"Chat template TypeError, retrying without extras: {e}")
-                for key in ["tools", "tool_choice", "enable_thinking"]:
+                for key in [
+                    "tools",
+                    "tool_choice",
+                    "enable_thinking",
+                    *custom_template_keys,
+                ]:
                     if key in template_kwargs:
                         del template_kwargs[key]
                 return template_applicator.apply_chat_template(
@@ -757,6 +775,7 @@ class BatchedEngine(BaseEngine):
         template_tools = convert_tools_for_template(tools) if tools else None
         template_tool_choice = kwargs.pop("tool_choice", None)
         enable_thinking = kwargs.pop("enable_thinking", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
 
         # Apply chat template
         prompt = self._apply_chat_template(
@@ -766,6 +785,7 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             num_audios=len(all_audio),
             enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
         )
 
         return await self.generate(
@@ -785,6 +805,7 @@ class BatchedEngine(BaseEngine):
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
         enable_thinking: bool | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> int:
         """Compute token count for the shared prefix across message variations.
 
@@ -811,6 +832,7 @@ class BatchedEngine(BaseEngine):
                 template_tools,
                 tool_choice,
                 enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
             )
 
             # Build a dummy variant with different last user content
@@ -824,6 +846,7 @@ class BatchedEngine(BaseEngine):
                 template_tools,
                 tool_choice,
                 enable_thinking=enable_thinking,
+                chat_template_kwargs=chat_template_kwargs,
             )
 
             tokenizer = self.tokenizer
@@ -893,6 +916,7 @@ class BatchedEngine(BaseEngine):
         template_tools = convert_tools_for_template(tools) if tools else None
         template_tool_choice = kwargs.pop("tool_choice", None)
         enable_thinking = kwargs.pop("enable_thinking", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
 
         # Apply chat template
         prompt = self._apply_chat_template(
@@ -902,6 +926,7 @@ class BatchedEngine(BaseEngine):
             num_images=len(all_images),
             num_audios=len(all_audio),
             enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
         )
 
         # Compute prefix boundary for cache
@@ -910,6 +935,7 @@ class BatchedEngine(BaseEngine):
             tools,
             template_tool_choice,
             enable_thinking=enable_thinking,
+            chat_template_kwargs=chat_template_kwargs,
         )
         if prefix_boundary > 0:
             kwargs["prefix_boundary"] = prefix_boundary

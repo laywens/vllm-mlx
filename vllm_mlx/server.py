@@ -160,6 +160,7 @@ _max_request_tokens: int = 32768
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
 _default_top_p: float | None = None  # Set via --default-top-p
+_default_chat_template_kwargs: dict[str, Any] | None = None
 _max_thinking_tokens: int | None = None  # Set via --max-thinking-tokens
 _effective_context_tokens: int | None = None  # Set via --effective-context-tokens
 _deterministic_mode: bool = False  # Set via --deterministic
@@ -592,6 +593,35 @@ def _resolve_top_p(request_value: float | None) -> float:
     if _default_top_p is not None:
         return _default_top_p
     return _FALLBACK_TOP_P
+
+
+def _resolve_chat_template_kwargs(
+    request_value: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve chat template kwargs: server defaults, then request overrides."""
+    resolved: dict[str, Any] = {}
+    if _default_chat_template_kwargs:
+        resolved.update(_default_chat_template_kwargs)
+    if request_value:
+        resolved.update(request_value)
+    return resolved
+
+
+def _json_object_arg(flag_name: str):
+    """Build an argparse type parser that accepts only JSON objects."""
+
+    def parse(value: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be a valid JSON object: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise argparse.ArgumentTypeError(f"{flag_name} must be a JSON object")
+        return parsed
+
+    return parse
 
 
 def _resolve_repetition_penalty(
@@ -4799,6 +4829,9 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if resolved_enable_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_enable_thinking
     chat_kwargs.update(_build_engine_thinking_kwargs(request.max_thinking_tokens))
+    chat_template_kwargs = _resolve_chat_template_kwargs(request.chat_template_kwargs)
+    if chat_template_kwargs:
+        chat_kwargs["chat_template_kwargs"] = chat_template_kwargs
 
     # Add multimodal content
     if has_media:
@@ -5070,6 +5103,11 @@ async def create_anthropic_message(
     chat_kwargs.update(
         _build_engine_thinking_kwargs(getattr(openai_request, "max_thinking_tokens", None))
     )
+    chat_template_kwargs = _resolve_chat_template_kwargs(
+        getattr(openai_request, "chat_template_kwargs", None)
+    )
+    if chat_template_kwargs:
+        chat_kwargs["chat_template_kwargs"] = chat_template_kwargs
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
@@ -5276,6 +5314,11 @@ async def _stream_anthropic_messages(
     chat_kwargs.update(
         _build_engine_thinking_kwargs(getattr(openai_request, "max_thinking_tokens", None))
     )
+    chat_template_kwargs = _resolve_chat_template_kwargs(
+        getattr(openai_request, "chat_template_kwargs", None)
+    )
+    if chat_template_kwargs:
+        chat_kwargs["chat_template_kwargs"] = chat_template_kwargs
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
@@ -6009,6 +6052,15 @@ Examples:
         help="Default top_p for generation when not specified in request",
     )
     parser.add_argument(
+        "--default-chat-template-kwargs",
+        type=_json_object_arg("--default-chat-template-kwargs"),
+        default=None,
+        help=(
+            "Default chat template kwargs to apply to chat requests "
+            '(JSON object, e.g. {"enable_thinking": false})'
+        ),
+    )
+    parser.add_argument(
         "--max-audio-upload-mb",
         type=int,
         default=DEFAULT_MAX_AUDIO_UPLOAD_MB,
@@ -6029,7 +6081,8 @@ Examples:
     global _memory_action, _memory_monitor_interval_seconds
     global _batch_divergence_monitor_enabled, _batch_divergence_interval_seconds
     global _batch_divergence_threshold, _batch_divergence_action
-    global _default_temperature, _default_top_p, _max_thinking_tokens
+    global _default_temperature, _default_top_p, _default_chat_template_kwargs
+    global _max_thinking_tokens
     global _max_audio_upload_bytes, _max_tts_input_chars
     global _effective_context_tokens
     global _deterministic_mode, _deterministic_serialize
@@ -6067,6 +6120,7 @@ Examples:
     )
     _default_temperature = args.default_temperature
     _default_top_p = args.default_top_p
+    _default_chat_template_kwargs = args.default_chat_template_kwargs
     _effective_context_tokens = args.effective_context_tokens
     _deterministic_mode = bool(args.deterministic)
     _deterministic_serialize = bool(args.deterministic)

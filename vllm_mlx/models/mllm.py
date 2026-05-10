@@ -1673,6 +1673,7 @@ class MLXMultimodalLM:
             tool_choice if tool_choice is not None else kwargs.pop("tool_choice", None)
         )
         enable_thinking = kwargs.pop("enable_thinking", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
 
         # Extract text and media from messages.
         # Build chat_messages for multi-turn support WITH proper media tokens per message.
@@ -1818,6 +1819,8 @@ class MLXMultimodalLM:
         try:
             # Use get_chat_template directly since messages are already properly formatted
             template_kwargs = {"add_generation_prompt": True}
+            if chat_template_kwargs:
+                template_kwargs.update(chat_template_kwargs)
             if template_tools:
                 template_kwargs["tools"] = template_tools
             if template_tool_choice is not None:
@@ -2101,6 +2104,7 @@ class MLXMultimodalLM:
                 else kwargs.pop("tool_choice", None)
             )
             enable_thinking = kwargs.pop("enable_thinking", None)
+            chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
         except ImportError:
             # Fallback to non-streaming if stream_generate not available
             output = self.chat(
@@ -2247,6 +2251,8 @@ class MLXMultimodalLM:
         try:
             # Use get_chat_template directly since messages are already properly formatted
             template_kwargs = {"add_generation_prompt": True}
+            if chat_template_kwargs:
+                template_kwargs.update(chat_template_kwargs)
             if template_tools:
                 template_kwargs["tools"] = template_tools
             elif tools:

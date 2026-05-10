@@ -296,6 +296,27 @@ class TestToolCallReplayNormalization:
 class TestBatchedEngineChatTemplate:
     """Tests for batched chat template selection."""
 
+    def test_llm_applies_chat_template_kwargs(self):
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        with patch("vllm_mlx.engine.batched.is_mllm_model", return_value=False):
+            engine = BatchedEngine("test-llm-model")
+
+        tokenizer = MagicMock()
+        tokenizer.apply_chat_template.return_value = "prompt"
+        engine._tokenizer = tokenizer
+        engine._is_mllm = False
+
+        prompt = engine._apply_chat_template(
+            [{"role": "user", "content": "Hello"}],
+            chat_template_kwargs={"enable_thinking": False, "custom_flag": "x"},
+        )
+
+        assert prompt == "prompt"
+        _, kwargs = tokenizer.apply_chat_template.call_args
+        assert kwargs["enable_thinking"] is False
+        assert kwargs["custom_flag"] == "x"
+
     def test_mllm_falls_back_to_tokenizer_when_processor_has_no_template(self):
         from vllm_mlx.engine.batched import BatchedEngine
 

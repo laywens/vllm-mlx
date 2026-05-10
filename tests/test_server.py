@@ -140,6 +140,7 @@ class TestChatCompletionRequest:
             repetition_penalty=1.2,
             repetition_policy_override="strict",
             max_thinking_tokens=128,
+            chat_template_kwargs={"enable_thinking": False},
             include_diagnostics=True,
             diagnostics_level="deep",
             stream=True,
@@ -151,6 +152,7 @@ class TestChatCompletionRequest:
         assert request.repetition_penalty == 1.2
         assert request.repetition_policy_override == "strict"
         assert request.max_thinking_tokens == 128
+        assert request.chat_template_kwargs == {"enable_thinking": False}
         assert request.include_diagnostics is True
         assert request.diagnostics_level == "deep"
         assert request.stream is True
@@ -2436,6 +2438,70 @@ class TestLogAndExceptionSanitization:
 
 class TestChatCompletionMessagePreparation:
     """Test chat message preparation before engine calls."""
+
+    @pytest.mark.anyio
+    async def test_chat_completion_merges_default_chat_template_kwargs(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        import vllm_mlx.server as server
+
+        captured = {}
+
+        class CapturingEngine:
+            is_mllm = False
+            preserve_native_tool_format = False
+
+            async def chat(self, *, messages, **kwargs):
+                captured["messages"] = messages
+                captured["kwargs"] = kwargs
+                return SimpleNamespace(
+                    text="done",
+                    tokens=[],
+                    prompt_tokens=4,
+                    completion_tokens=1,
+                    finish_reason="stop",
+                    stop_reason=None,
+                    stop_reason_detail=None,
+                )
+
+        async def await_result(result, raw_request, timeout):
+            del raw_request, timeout
+            return await result
+
+        monkeypatch.setattr(server, "get_engine", lambda: CapturingEngine())
+        monkeypatch.setattr(server, "_wait_with_disconnect", await_result)
+        monkeypatch.setattr(server, "_strict_model_id", False)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+        monkeypatch.setattr(
+            server,
+            "_default_chat_template_kwargs",
+            {"enable_thinking": False, "server_default_only": "yes"},
+            raising=False,
+        )
+
+        request = server.ChatCompletionRequest(
+            model="test-model",
+            messages=[server.Message(role="user", content="Hello")],
+            max_tokens=8,
+            chat_template_kwargs={
+                "enable_thinking": True,
+                "request_only": 1,
+            },
+        )
+
+        await server.create_chat_completion(
+            request,
+            raw_request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")),
+        )
+
+        assert captured["kwargs"]["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "server_default_only": "yes",
+            "request_only": 1,
+        }
 
     @pytest.mark.anyio
     async def test_mllm_native_tool_arguments_are_json_objects(self, monkeypatch):

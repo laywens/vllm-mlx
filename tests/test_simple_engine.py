@@ -323,6 +323,27 @@ class TestSimpleEngineThinkingBudget:
 class TestSimpleEngineToolChoicePassthrough:
     """Test tool/tool_choice propagation for LLM and MLLM paths."""
 
+    def test_llm_prompt_applies_chat_template_kwargs(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        model = MagicMock()
+        model.tokenizer = MagicMock()
+        model.tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-llm")
+            engine._model = model
+
+        prompt = engine._build_llm_prompt(
+            [{"role": "user", "content": "Hello"}],
+            chat_template_kwargs={"enable_thinking": False, "custom_flag": "x"},
+        )
+
+        assert prompt == "prompt"
+        _, kwargs = model.tokenizer.apply_chat_template.call_args
+        assert kwargs["enable_thinking"] is False
+        assert kwargs["custom_flag"] == "x"
+
     @pytest.mark.asyncio
     async def test_mllm_chat_passes_tools_and_tool_choice(self):
         from vllm_mlx.engine.simple import SimpleEngine
@@ -362,12 +383,14 @@ class TestSimpleEngineToolChoicePassthrough:
                 messages=[{"role": "user", "content": "Find X"}],
                 tools=tools,
                 tool_choice=tool_choice,
+                chat_template_kwargs={"enable_thinking": False},
                 max_tokens=32,
             )
 
             _, kwargs = model.chat.call_args
             assert kwargs["tools"] == tools
             assert kwargs["tool_choice"] == tool_choice
+            assert kwargs["chat_template_kwargs"] == {"enable_thinking": False}
 
     @pytest.mark.asyncio
     async def test_mllm_stream_chat_passes_tools_and_tool_choice(self):

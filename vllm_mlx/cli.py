@@ -427,6 +427,7 @@ def serve_command(args):
     # Configure generation defaults
     server._default_temperature = args.default_temperature
     server._default_top_p = args.default_top_p
+    server._default_chat_template_kwargs = args.default_chat_template_kwargs
     server._effective_context_tokens = args.effective_context_tokens
     server._deterministic_mode = False
     server._deterministic_serialize = False
@@ -1761,6 +1762,15 @@ Examples:
         type=float,
         default=None,
         help="Override default top_p for all requests (default: use model default)",
+    )
+    serve_parser.add_argument(
+        "--default-chat-template-kwargs",
+        type=_json_object_arg("--default-chat-template-kwargs"),
+        default=None,
+        help=(
+            "Default chat template kwargs to apply to chat requests "
+            '(JSON object, e.g. {"enable_thinking": false})'
+        ),
     )
     # Embedding model option
     serve_parser.add_argument(

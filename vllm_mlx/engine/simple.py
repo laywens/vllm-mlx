@@ -194,30 +194,46 @@ class SimpleEngine(BaseEngine):
         template_tools: list[dict] | None = None,
         template_tool_choice: str | dict | None = None,
         enable_thinking: bool | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> str:
         """Build an LLM prompt from OpenAI-format messages."""
         tokenizer = self._model.tokenizer
         if hasattr(tokenizer, "apply_chat_template"):
+            custom_template_keys = set(chat_template_kwargs or ()) - {
+                "tokenize",
+                "add_generation_prompt",
+            }
             # Disable thinking mode for coder models since it interferes
             # with tool call parsing (tags leak as raw text).
             resolved_enable_thinking = enable_thinking
-            if resolved_enable_thinking is None:
+            if resolved_enable_thinking is None and not (
+                chat_template_kwargs and "enable_thinking" in chat_template_kwargs
+            ):
                 resolved_enable_thinking = "coder" not in self._model_name.lower()
             template_kwargs = {
                 "tokenize": False,
                 "add_generation_prompt": True,
                 "enable_thinking": resolved_enable_thinking,
             }
+            if chat_template_kwargs:
+                template_kwargs.update(chat_template_kwargs)
             if template_tools:
                 template_kwargs["tools"] = template_tools
             if template_tool_choice is not None:
                 template_kwargs["tool_choice"] = template_tool_choice
+            if resolved_enable_thinking is not None:
+                template_kwargs["enable_thinking"] = resolved_enable_thinking
 
             try:
                 return tokenizer.apply_chat_template(messages, **template_kwargs)
             except TypeError:
                 # Some templates don't support all kwargs
-                for key in ["tools", "tool_choice", "enable_thinking"]:
+                for key in [
+                    "tools",
+                    "tool_choice",
+                    "enable_thinking",
+                    *custom_template_keys,
+                ]:
                     if key in template_kwargs:
                         del template_kwargs[key]
                 return tokenizer.apply_chat_template(messages, **template_kwargs)
@@ -681,6 +697,7 @@ class SimpleEngine(BaseEngine):
         thinking_start_token = kwargs.pop("thinking_start_token", "<think>")
         thinking_end_token = kwargs.pop("thinking_end_token", "</think>")
         enable_thinking = kwargs.pop("enable_thinking", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
         stop = kwargs.pop("stop", None)
         template_tool_choice = kwargs.pop("tool_choice", None)
         llm_repetition_policy = kwargs.pop("repetition_policy", None)
@@ -694,6 +711,7 @@ class SimpleEngine(BaseEngine):
                 template_tools,
                 template_tool_choice,
                 enable_thinking,
+                chat_template_kwargs,
             )
 
         if not self._is_mllm and thinking_budget_tokens:
@@ -737,6 +755,7 @@ class SimpleEngine(BaseEngine):
                     tools=template_tools,
                     tool_choice=template_tool_choice,
                     enable_thinking=enable_thinking,
+                    chat_template_kwargs=chat_template_kwargs,
                     **kwargs,
                 )
                 text = clean_output_text(output.text)
@@ -808,6 +827,7 @@ class SimpleEngine(BaseEngine):
         thinking_start_token = kwargs.pop("thinking_start_token", "<think>")
         thinking_end_token = kwargs.pop("thinking_end_token", "</think>")
         enable_thinking = kwargs.pop("enable_thinking", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
         stop = kwargs.pop("stop", None)
         template_tool_choice = kwargs.pop("tool_choice", None)
 
@@ -827,6 +847,7 @@ class SimpleEngine(BaseEngine):
                 temperature,
                 top_p,
                 tools=template_tools,
+                chat_template_kwargs=chat_template_kwargs,
                 **kwargs,
             ):
                 yield chunk
@@ -858,6 +879,7 @@ class SimpleEngine(BaseEngine):
                             tools=template_tools,
                             tool_choice=template_tool_choice,
                             enable_thinking=enable_thinking,
+                            chat_template_kwargs=chat_template_kwargs,
                             **kwargs,
                         ):
                             chunk_queue.put(chunk)
@@ -907,6 +929,7 @@ class SimpleEngine(BaseEngine):
             template_tools,
             template_tool_choice,
             enable_thinking,
+            chat_template_kwargs,
         )
 
         if thinking_budget_tokens:
@@ -1150,6 +1173,7 @@ class SimpleEngine(BaseEngine):
         # Per-request specprefill overrides (from extra_body)
         specprefill_override = kwargs.pop("specprefill", None)
         specprefill_keep_pct = kwargs.pop("specprefill_keep_pct", None)
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", None)
 
         # Read enable_thinking from env (set by runtime_patches, consistent with MLLM path)
         enable_thinking_env = os.environ.get("VLLM_MLX_ENABLE_THINKING", "true")
@@ -1161,6 +1185,12 @@ class SimpleEngine(BaseEngine):
             "add_generation_prompt": True,
             "enable_thinking": enable_thinking,
         }
+        custom_template_keys = set(chat_template_kwargs or ()) - {
+            "tokenize",
+            "add_generation_prompt",
+        }
+        if chat_template_kwargs:
+            template_kwargs.update(chat_template_kwargs)
         if tools:
             template_kwargs["tools"] = tools
 
@@ -1172,6 +1202,8 @@ class SimpleEngine(BaseEngine):
             # Template doesn't accept tools= or enable_thinking=
             template_kwargs.pop("tools", None)
             template_kwargs.pop("enable_thinking", None)
+            for key in custom_template_keys:
+                template_kwargs.pop(key, None)
             full_prompt = self._text_tokenizer.apply_chat_template(
                 messages, **template_kwargs
             )
