@@ -8,9 +8,9 @@ performance when serving a single user at a time.
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from queue import Queue
 from threading import Thread
-from collections.abc import AsyncIterator
 from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
@@ -654,6 +654,7 @@ class SimpleEngine(BaseEngine):
         tools: list[dict] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        audio: list[str] | None = None,
         **kwargs,
     ) -> GenerationOutput:
         """
@@ -667,6 +668,7 @@ class SimpleEngine(BaseEngine):
             tools: Optional tool definitions
             images: Optional image URLs/paths
             videos: Optional video URLs/paths
+            audio: Optional audio URLs/paths
             **kwargs: Additional model-specific parameters
 
         Returns:
@@ -723,7 +725,7 @@ class SimpleEngine(BaseEngine):
 
         async with self._generation_lock:
             if self._is_mllm:
-                # For MLLM, use the chat method which handles images/videos
+                # For MLLM, use the chat method which handles media in messages.
                 # Run in thread pool to allow asyncio timeout to work
                 output = await asyncio.to_thread(
                     self._model.chat,
@@ -779,6 +781,7 @@ class SimpleEngine(BaseEngine):
         tools: list[dict] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        audio: list[str] | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         """
@@ -792,6 +795,7 @@ class SimpleEngine(BaseEngine):
             tools: Optional tool definitions
             images: Optional image URLs/paths
             videos: Optional video URLs/paths
+            audio: Optional audio URLs/paths
             **kwargs: Additional model-specific parameters
 
         Yields:

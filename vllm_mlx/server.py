@@ -762,6 +762,8 @@ def _iter_media_sources(messages: list[Message] | list[dict[str, Any]]) -> list[
                 raw_source = item.get("video", item.get("url", ""))
             elif item_type == "audio_url":
                 raw_source = item.get("audio_url", {})
+            elif item_type == "audio":
+                raw_source = item.get("audio", item.get("url", ""))
             else:
                 continue
 
@@ -3043,7 +3045,7 @@ def _count_visual_inputs(messages: list[Message]) -> int:
 
 def _collect_video_inputs(messages: list[Message]) -> list[str]:
     """Extract non-empty video inputs from request messages."""
-    _, _, videos = extract_multimodal_content(messages)
+    _, _, videos, _ = extract_multimodal_content(messages)
     collected: list[str] = []
     for item in videos:
         if isinstance(item, str) and item.strip():
@@ -3061,7 +3063,7 @@ def _validate_video_request_contract(
 
     Returns a normalized list of video inputs.
     """
-    _, _, raw_videos = extract_multimodal_content(request.messages)
+    _, _, raw_videos, _ = extract_multimodal_content(request.messages)
     videos: list[str] = []
     for idx, item in enumerate(raw_videos):
         if not isinstance(item, str) or not item.strip():
@@ -4724,7 +4726,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 raw = dict(msg)
                 msg_dict = {k: v for k, v in raw.items() if v is not None}
             messages.append(msg_dict)
-        images, videos = [], []  # MLLM extracts these from messages
+        images, videos, audios = [], [], []  # MLLM extracts these from messages
         logger.debug(f"MLLM: Processing {len(messages)} messages")
         # Native chat templates iterate tool arguments, but OpenAI sends
         # them as JSON strings. The LLM path handles this in
@@ -4740,15 +4742,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         except (json.JSONDecodeError, ValueError):
                             pass
     else:
-        # For LLM, extract text, images, and videos separately
-        messages, images, videos = extract_multimodal_content(
+        # For LLM, extract text, images, videos, and audio separately
+        messages, images, videos, audios = extract_multimodal_content(
             request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
         )
 
-    has_media = bool(images or videos)
+    has_media = bool(images or videos or audios)
     if engine.is_mllm and not has_media:
-        # MLLM extracts media from messages directly, so images/videos are
+        # MLLM extracts media from messages directly, so media lists are
         # always empty. Check message content for video/image types instead.
         for msg in request.messages:
             content = msg.content if hasattr(msg, "content") else msg.get("content", "")
@@ -4759,7 +4761,14 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         if hasattr(item, "type")
                         else (item.get("type", "") if isinstance(item, dict) else "")
                     )
-                    if item_type in ("image_url", "image", "video", "video_url"):
+                    if item_type in (
+                        "image_url",
+                        "image",
+                        "video",
+                        "video_url",
+                        "audio",
+                        "audio_url",
+                    ):
                         has_media = True
                         break
             if has_media:
@@ -4795,6 +4804,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     if has_media:
         chat_kwargs["images"] = images if images else None
         chat_kwargs["videos"] = videos if videos else None
+        chat_kwargs["audio"] = audios if audios else None
         if request.video_fps:
             chat_kwargs["video_fps"] = request.video_fps
         if request.video_max_frames:
@@ -5036,7 +5046,7 @@ async def create_anthropic_message(
         )
 
     # Non-streaming: run inference through existing engine
-    messages, images, videos = extract_multimodal_content(
+    messages, images, videos, audios = extract_multimodal_content(
         openai_request.messages,
         preserve_native_format=engine.preserve_native_tool_format,
     )
@@ -5053,6 +5063,10 @@ async def create_anthropic_message(
     )
     if repetition_penalty is not None:
         chat_kwargs["repetition_penalty"] = repetition_penalty
+    if images or videos or audios:
+        chat_kwargs["images"] = images if images else None
+        chat_kwargs["videos"] = videos if videos else None
+        chat_kwargs["audio"] = audios if audios else None
     chat_kwargs.update(
         _build_engine_thinking_kwargs(getattr(openai_request, "max_thinking_tokens", None))
     )
@@ -5238,7 +5252,7 @@ async def _stream_anthropic_messages(
     start_time = time.perf_counter()
 
     # Extract messages for engine
-    messages, images, videos = extract_multimodal_content(
+    messages, images, videos, audios = extract_multimodal_content(
         openai_request.messages,
         preserve_native_format=engine.preserve_native_tool_format,
     )
@@ -5255,6 +5269,10 @@ async def _stream_anthropic_messages(
     )
     if repetition_penalty is not None:
         chat_kwargs["repetition_penalty"] = repetition_penalty
+    if images or videos or audios:
+        chat_kwargs["images"] = images if images else None
+        chat_kwargs["videos"] = videos if videos else None
+        chat_kwargs["audio"] = audios if audios else None
     chat_kwargs.update(
         _build_engine_thinking_kwargs(getattr(openai_request, "max_thinking_tokens", None))
     )

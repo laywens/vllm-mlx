@@ -76,6 +76,45 @@ class TestBatchedEngineGenerate:
         assert result.completion_tokens == 2
         assert result.finish_reason == "stop"
 
+    @pytest.mark.anyio
+    async def test_mllm_chat_routes_audio_from_messages(self):
+        engine = self._make_engine(is_mllm=True)
+        engine._processor = MagicMock()
+        engine._processor.apply_chat_template.return_value = "formatted prompt"
+        engine._processor.tokenizer = MagicMock()
+        engine._mllm_scheduler = SimpleNamespace(
+            generate=AsyncMock(
+                return_value=SimpleNamespace(
+                    output_text="audio answer",
+                    output_token_ids=[7],
+                    prompt_tokens=4,
+                    completion_tokens=1,
+                    finish_reason="stop",
+                )
+            )
+        )
+
+        await engine.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is in this clip?"},
+                        {
+                            "type": "audio_url",
+                            "audio_url": {"url": "data:audio/wav;base64,AAAA"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=10,
+        )
+
+        engine._mllm_scheduler.generate.assert_awaited_once()
+        assert engine._mllm_scheduler.generate.await_args.kwargs["audio"] == [
+            "data:audio/wav;base64,AAAA"
+        ]
+
 
 class TestBatchedEngineAbortRequest:
     @pytest.mark.anyio

@@ -507,13 +507,13 @@ def _content_to_text(content) -> str:
 def extract_multimodal_content(
     messages: list[Message],
     preserve_native_format: bool = False,
-) -> tuple[list[dict], list[str], list[str]]:
+) -> tuple[list[dict], list[str], list[str], list[str]]:
     """
-    Extract text content, images, and videos from OpenAI-format messages.
+    Extract text content, images, videos, and audio from OpenAI-format messages.
 
     Handles:
     - Simple text messages
-    - Multimodal messages with images/videos
+    - Multimodal messages with images/videos/audio
     - Tool call messages (assistant with tool_calls)
     - Tool response messages (role="tool")
 
@@ -525,14 +525,16 @@ def extract_multimodal_content(
             (e.g., Mistral, Llama 3+, DeepSeek V3).
 
     Returns:
-        Tuple of (processed_messages, images, videos)
+        Tuple of (processed_messages, images, videos, audios)
         - processed_messages: List of {"role": str, "content": str}
         - images: List of image URLs/paths/base64
         - videos: List of video URLs/paths/base64
+        - audios: List of audio URLs/paths/base64
     """
     processed_messages = []
     images = []
     videos = []
+    audios = []
 
     for msg in messages:
         # Handle both dict and Pydantic model messages
@@ -669,6 +671,16 @@ def extract_multimodal_content(
                     elif isinstance(vid_url, dict):
                         videos.append(vid_url.get("url", ""))
 
+                elif item_type == "audio":
+                    audios.append(item.get("audio", item.get("url", "")))
+
+                elif item_type == "audio_url":
+                    aud_url = item.get("audio_url", {})
+                    if isinstance(aud_url, str):
+                        audios.append(aud_url)
+                    elif isinstance(aud_url, dict):
+                        audios.append(aud_url.get("url", ""))
+
             # Combine text parts
             combined_text = "\n".join(text_parts) if text_parts else ""
             processed_messages.append({"role": role, "content": combined_text})
@@ -676,4 +688,4 @@ def extract_multimodal_content(
             # Unknown format, try to convert
             processed_messages.append({"role": role, "content": str(content)})
 
-    return processed_messages, images, videos
+    return processed_messages, images, videos, audios

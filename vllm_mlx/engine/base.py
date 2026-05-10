@@ -141,6 +141,7 @@ class BaseEngine(ABC):
         tools: list[dict] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        audio: list[str] | None = None,
         **kwargs,
     ) -> GenerationOutput:
         """
@@ -154,6 +155,7 @@ class BaseEngine(ABC):
             tools: Optional tool definitions
             images: Optional image URLs/paths
             videos: Optional video URLs/paths
+            audio: Optional audio URLs/paths
             **kwargs: Additional model-specific parameters
 
         Returns:
@@ -171,6 +173,7 @@ class BaseEngine(ABC):
         tools: list[dict] | None = None,
         images: list[str] | None = None,
         videos: list[str] | None = None,
+        audio: list[str] | None = None,
         **kwargs,
     ) -> AsyncIterator[GenerationOutput]:
         """
@@ -184,6 +187,7 @@ class BaseEngine(ABC):
             tools: Optional tool definitions
             images: Optional image URLs/paths
             videos: Optional video URLs/paths
+            audio: Optional audio URLs/paths
             **kwargs: Additional model-specific parameters
 
         Yields:

@@ -330,6 +330,43 @@ class TestVideoProcessing:
             mllm.download_video("http://127.0.0.1/internal.mp4")
 
 
+class TestAudioProcessing:
+    """Test audio input processing functions."""
+
+    def test_process_audio_input_dict_format_base64(self):
+        """Test processing audio in dict format with base64 payload."""
+        from vllm_mlx.models.mllm import process_audio_input
+
+        audio_b64 = base64.b64encode(b"RIFF....WAVEfmt ").decode()
+        result = process_audio_input(
+            {"audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}}
+        )
+        assert Path(result).exists()
+        assert result.endswith(".wav")
+
+    def test_process_audio_input_empty_raises(self):
+        """Test that empty audio input raises error."""
+        from vllm_mlx.models.mllm import process_audio_input
+
+        with pytest.raises(ValueError):
+            process_audio_input("")
+
+        with pytest.raises(ValueError):
+            process_audio_input({})
+
+    def test_download_audio_blocks_unsafe_url_before_request(self, monkeypatch):
+        """Test that blocked audio URLs fail before any request is made."""
+        from vllm_mlx.models import mllm
+
+        def fail_request(*args, **kwargs):
+            raise AssertionError("requests.request should not be called")
+
+        monkeypatch.setattr(mllm.requests, "request", fail_request)
+
+        with pytest.raises(mllm.UnsafeRemoteURLError):
+            mllm.download_audio("http://localhost/internal.wav")
+
+
 # =============================================================================
 # MLLM Model Tests
 # =============================================================================

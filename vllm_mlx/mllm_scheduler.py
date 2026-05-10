@@ -85,6 +85,7 @@ class MLLMRequest:
     prompt: str
     images: Optional[List[str]] = None
     videos: Optional[List[str]] = None
+    audio: Optional[List[str]] = None
     video_fps: float | None = None
     video_max_frames: int | None = None
     sampling_params: SamplingParams = field(default_factory=SamplingParams)
@@ -278,6 +279,7 @@ class MLLMScheduler:
         prompt: str,
         images: Optional[List[str]] = None,
         videos: Optional[List[str]] = None,
+        audio: Optional[List[str]] = None,
         video_fps: float | None = None,
         video_max_frames: int | None = None,
         max_tokens: int = 256,
@@ -293,6 +295,7 @@ class MLLMScheduler:
             prompt: Text prompt (should be formatted with chat template)
             images: List of image inputs (paths, URLs, base64)
             videos: List of video inputs
+            audio: List of audio inputs
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling
@@ -317,6 +320,7 @@ class MLLMScheduler:
             prompt=prompt,
             images=images,
             videos=videos,
+            audio=audio,
             video_fps=video_fps,
             video_max_frames=video_max_frames,
             sampling_params=sampling_params,
@@ -327,7 +331,8 @@ class MLLMScheduler:
 
         logger.debug(
             f"Added MLLM request {request_id}: "
-            f"{len(images or [])} images, {len(videos or [])} videos"
+            f"{len(images or [])} images, {len(videos or [])} videos, "
+            f"{len(audio or [])} audio"
         )
 
         return request_id
@@ -419,6 +424,7 @@ class MLLMScheduler:
                 prompt=request.prompt,
                 images=request.images,
                 videos=request.videos,
+                audio=request.audio,
                 video_fps=(
                     request.video_fps
                     if request.video_fps is not None
@@ -688,6 +694,7 @@ class MLLMScheduler:
                             req.input_ids is None
                             and not req.images
                             and not req.videos
+                            and not req.audio
                         ):
                             try:
                                 tic = time.perf_counter()
@@ -740,6 +747,7 @@ class MLLMScheduler:
         prompt: str,
         images: Optional[List[str]] = None,
         videos: Optional[List[str]] = None,
+        audio: Optional[List[str]] = None,
         video_fps: float | None = None,
         video_max_frames: int | None = None,
         max_tokens: int = 256,
@@ -754,6 +762,7 @@ class MLLMScheduler:
             prompt: Text prompt
             images: List of image inputs
             videos: List of video inputs
+            audio: List of audio inputs
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             top_p: Top-p sampling
@@ -766,6 +775,7 @@ class MLLMScheduler:
             prompt=prompt,
             images=images,
             videos=videos,
+            audio=audio,
             video_fps=video_fps,
             video_max_frames=video_max_frames,
             max_tokens=max_tokens,
@@ -821,6 +831,7 @@ class MLLMScheduler:
         prompt: str,
         images: Optional[List[str]] = None,
         videos: Optional[List[str]] = None,
+        audio: Optional[List[str]] = None,
         **kwargs,
     ) -> RequestOutput:
         """
@@ -830,6 +841,7 @@ class MLLMScheduler:
             prompt: Text prompt
             images: Image inputs
             videos: Video inputs
+            audio: Audio inputs
             **kwargs: Generation parameters
 
         Returns:
@@ -839,6 +851,7 @@ class MLLMScheduler:
             prompt=prompt,
             images=images,
             videos=videos,
+            audio=audio,
             **kwargs,
         )
 

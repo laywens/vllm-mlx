@@ -830,7 +830,7 @@ class TestHelperFunctions:
             Message(role="assistant", content="Hi there!"),
         ]
 
-        processed, images, videos = extract_multimodal_content(messages)
+        processed, images, videos, _audios = extract_multimodal_content(messages)
 
         assert len(processed) == 2
         assert processed[0]["content"] == "Hello"
@@ -854,7 +854,7 @@ class TestHelperFunctions:
             )
         ]
 
-        processed, images, videos = extract_multimodal_content(messages)
+        processed, images, videos, _audios = extract_multimodal_content(messages)
 
         assert len(processed) == 1
         assert processed[0]["content"] == "What's this?"
@@ -875,7 +875,7 @@ class TestHelperFunctions:
             )
         ]
 
-        processed, images, videos = extract_multimodal_content(messages)
+        processed, images, videos, _audios = extract_multimodal_content(messages)
 
         assert len(processed) == 1
         assert processed[0]["content"] == "Describe this video"
@@ -899,7 +899,7 @@ class TestHelperFunctions:
             )
         ]
 
-        processed, images, videos = extract_multimodal_content(messages)
+        processed, images, videos, _audios = extract_multimodal_content(messages)
 
         assert len(videos) == 1
 

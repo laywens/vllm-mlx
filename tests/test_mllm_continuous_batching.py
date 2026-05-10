@@ -16,7 +16,9 @@ Test Cases:
 import asyncio
 import base64
 import os
+import sys
 import tempfile
+from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
@@ -88,6 +90,7 @@ class TestMLLMBatchRequest:
 
         assert req.images is None
         assert req.videos is None
+        assert req.audio is None
         assert req.max_tokens == 256
         assert req.temperature == 0.7
         assert req.top_p == 0.9
@@ -530,6 +533,61 @@ class TestPreprocessIdempotent:
         with pytest.raises(Exception):
             gen._preprocess_request(req)
 
+    def test_audio_request_is_preprocessed_and_passed_to_prepare_inputs(
+        self, monkeypatch
+    ):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+        )
+
+        captured = {}
+
+        fake_mlx_vlm = ModuleType("mlx_vlm")
+        fake_utils = ModuleType("mlx_vlm.utils")
+
+        def fake_prepare_inputs(processor, **kwargs):
+            captured.update(kwargs)
+            return {
+                "input_ids": mx.array([1, 2, 3]),
+                "attention_mask": mx.array([1, 1, 1]),
+            }
+
+        fake_utils.prepare_inputs = fake_prepare_inputs
+        fake_mlx_vlm.utils = fake_utils
+        monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
+        monkeypatch.setitem(sys.modules, "mlx_vlm.utils", fake_utils)
+
+        class FailOnPixelCache:
+            def get_pixel_cache(self, images, prompt):
+                raise AssertionError("pixel cache should be disabled for audio")
+
+            def set_pixel_cache(self, **kwargs):
+                raise AssertionError("pixel cache should not store audio requests")
+
+        req = MLLMBatchRequest(
+            uid=0,
+            request_id="req-audio",
+            prompt="Transcribe",
+            audio=[f"data:audio/wav;base64,{base64.b64encode(b'audio').decode()}"],
+        )
+        req.input_ids = mx.array([[9, 9]])
+
+        gen = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+        gen.model = MagicMock()
+        gen.model.config = None
+        gen.processor = MagicMock()
+        gen.vision_cache = FailOnPixelCache()
+        gen._stats = MagicMock()
+        gen._stats.num_images_processed = 0
+        gen._stats.vision_encoding_time = 0
+
+        gen._preprocess_request(req)
+
+        assert captured["audio"]
+        assert captured["images"] is None
+        assert req.input_ids.tolist() == [1, 2, 3]
+
     @pytest.mark.asyncio
     async def test_process_loop_preprocesses_text_requests_before_step(
         self, monkeypatch
@@ -644,6 +702,73 @@ class TestMLLMSchedulerVideoParams:
         assert len(dummy_batch.inserted) == 1
         assert dummy_batch.inserted[0].video_fps == 3.0
         assert dummy_batch.inserted[0].video_max_frames == 48
+
+
+class TestMLLMSchedulerAudioParams:
+    """Tests for audio propagation in scheduler request state."""
+
+    def test_add_request_stores_audio_inputs(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        model = MagicMock()
+        model.config = None
+        processor = MagicMock()
+        processor.tokenizer = MagicMock()
+        processor.tokenizer.eos_token_id = 2
+        processor.tokenizer.eos_token_ids = None
+
+        scheduler = MLLMScheduler(
+            model=model,
+            processor=processor,
+            config=MLLMSchedulerConfig(enable_vision_cache=False),
+        )
+
+        request_id = scheduler.add_request(
+            prompt="Transcribe",
+            audio=["clip.wav"],
+            max_tokens=32,
+        )
+        request = scheduler.get_request(request_id)
+
+        assert request is not None
+        assert request.audio == ["clip.wav"]
+
+    def test_schedule_waiting_propagates_audio_to_batch_request(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        class DummyBatchGenerator:
+            def __init__(self):
+                self.inserted = None
+
+            def insert(self, batch_requests):
+                self.inserted = batch_requests
+                return list(range(100, 100 + len(batch_requests)))
+
+        model = MagicMock()
+        model.config = None
+        processor = MagicMock()
+        processor.tokenizer = MagicMock()
+        processor.tokenizer.eos_token_id = 2
+        processor.tokenizer.eos_token_ids = None
+
+        scheduler = MLLMScheduler(
+            model=model,
+            processor=processor,
+            config=MLLMSchedulerConfig(enable_vision_cache=False),
+        )
+        dummy_batch = DummyBatchGenerator()
+        scheduler.batch_generator = dummy_batch
+
+        scheduler.add_request(
+            prompt="Transcribe",
+            audio=["clip.wav"],
+            max_tokens=16,
+        )
+        scheduled = scheduler._schedule_waiting()
+
+        assert len(scheduled) == 1
+        assert dummy_batch.inserted is not None
+        assert dummy_batch.inserted[0].audio == ["clip.wav"]
 
 
 class TestMLLMRequest:

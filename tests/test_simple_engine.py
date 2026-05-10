@@ -570,6 +570,45 @@ class TestSimpleEngineToolChoicePassthrough:
             assert result.text == "ok"
 
     @pytest.mark.asyncio
+    async def test_llm_chat_does_not_leak_audio_to_model_call(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        model = MagicMock()
+        model.tokenizer = MagicMock()
+        model.tokenizer.apply_chat_template = MagicMock(return_value="prompt")
+        model.tokenizer.encode = MagicMock(return_value=[101, 102])
+
+        def strict_chat(
+            *,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            tools,
+            enable_thinking,
+        ):
+            del messages, max_tokens, temperature, top_p, stop, tools, enable_thinking
+            return MagicMock(text="ok", tokens=[1], finish_reason="stop")
+
+        model.chat = MagicMock(side_effect=strict_chat)
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-llm")
+            engine._model = model
+            engine._loaded = True
+
+            result = await engine.chat(
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=8,
+                audio=["clip.wav"],
+            )
+
+            _, chat_kwargs = model.chat.call_args
+            assert "audio" not in chat_kwargs
+            assert result.text == "ok"
+
+    @pytest.mark.asyncio
     async def test_llm_generate_does_not_leak_repetition_policy(self):
         from vllm_mlx.engine.simple import SimpleEngine
 
