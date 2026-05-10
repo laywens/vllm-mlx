@@ -1,0 +1,589 @@
+# Instincts generated from https://github.com/laywens/vllm-mlx
+# Generated: 2026-05-10T13:44:56.233Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: vllm-mlx-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, feat
+
+## Evidence
+
+- 62 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix(mcp): log zero millisecond audit timings, feat(tools): parse MiniMax tool calls
+
+---
+id: vllm-mlx-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Commit Length
+
+## Action
+
+Keep commit messages concise (~43 characters)
+
+## Evidence
+
+- Average commit message length: 43 chars
+- Based on 62 commits
+
+---
+id: vllm-mlx-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Naming Files
+
+## Action
+
+Use snake_case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: snake_case
+
+---
+id: vllm-mlx-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: vllm-mlx-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: vllm-mlx-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: vllm-mlx-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: vllm-mlx-workflow-feature-or-bugfix-with-test
+trigger: "when doing feature or bugfix with test"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Workflow Feature Or Bugfix With Test
+
+## Action
+
+Follow the feature-or-bugfix-with-test workflow:
+1. Edit or create implementation files in vllm_mlx/ or subdirectories.
+2. Edit or create test files in tests/ corresponding to the change.
+3. Commit both code and test changes together.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~20x per month
+- Files: vllm_mlx/**/*.py, tests/**/*.py
+
+---
+id: vllm-mlx-workflow-api-or-server-change-with-test
+trigger: "when doing api or server change with test"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Workflow Api Or Server Change With Test
+
+## Action
+
+Follow the api-or-server-change-with-test workflow:
+1. Edit vllm_mlx/server.py and/or vllm_mlx/api/*.py.
+2. Edit or create tests in tests/test_server.py or related test files.
+3. Commit both server/api and test changes together.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~10x per month
+- Files: vllm_mlx/server.py, vllm_mlx/api/*.py, tests/test_server.py
+
+---
+id: vllm-mlx-workflow-tool-parser-extension-with-tests
+trigger: "when doing tool parser extension with tests"
+confidence: 0.75
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Workflow Tool Parser Extension With Tests
+
+## Action
+
+Follow the tool-parser-extension-with-tests workflow:
+1. Edit or add files in vllm_mlx/tool_parsers/ (e.g., qwen_tool_parser.py, qwen3_xml_tool_parser.py, etc.).
+2. Edit or add corresponding tests in tests/test_tool_parsers.py or related files.
+3. Optionally update __init__.py to register new parsers.
+4. Commit parser and test changes together.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~5x per month
+- Files: vllm_mlx/tool_parsers/*.py, tests/test_tool_parsers.py, vllm_mlx/tool_parsers/__init__.py
+
+---
+id: vllm-mlx-workflow-cli-or-model-workflow-feature
+trigger: "when doing cli or model workflow feature"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Workflow Cli Or Model Workflow Feature
+
+## Action
+
+Follow the cli-or-model-workflow-feature workflow:
+1. Edit vllm_mlx/cli.py and/or vllm_mlx/model_workflow.py.
+2. Edit or add documentation in docs/reference/cli.md or README.md.
+3. Edit or add tests in tests/test_model_workflow.py.
+4. Commit all related changes together.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: vllm_mlx/cli.py, vllm_mlx/model_workflow.py, docs/reference/cli.md
+
+---
+id: vllm-mlx-workflow-scheduler-or-batching-change-with-test
+trigger: "when doing scheduler or batching change with test"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/laywens/vllm-mlx
+---
+
+# Vllm Mlx Workflow Scheduler Or Batching Change With Test
+
+## Action
+
+Follow the scheduler-or-batching-change-with-test workflow:
+1. Edit vllm_mlx/scheduler.py and/or vllm_mlx/mllm_scheduler.py.
+2. Edit or create tests in tests/test_batching.py or tests/test_mllm_continuous_batching.py.
+3. Commit both code and test changes together.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: vllm_mlx/scheduler.py, vllm_mlx/mllm_scheduler.py, tests/test_batching.py
+
+---
+id: vllm-mlx-instinct-file-naming
+trigger: "When creating or renaming a file in the codebase"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct File Naming
+
+## Action
+
+Use snake_case for file names
+
+## Evidence
+
+- Pattern in namingConventions.files
+- Files in vllm_mlx/ use snake_case
+
+---
+id: vllm-mlx-instinct-function-naming
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Function Naming
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in namingConventions.functions
+- Functions in vllm_mlx/ follow camelCase
+
+---
+id: vllm-mlx-instinct-class-naming
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Class Naming
+
+## Action
+
+Use PascalCase for class names
+
+## Evidence
+
+- Pattern in namingConventions.classes
+- Classes in vllm_mlx/ use PascalCase
+
+---
+id: vllm-mlx-instinct-constant-naming
+trigger: "When defining a constant"
+confidence: 0.85
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in namingConventions.constants
+- Constants in vllm_mlx/ use SCREAMING_SNAKE_CASE
+
+---
+id: vllm-mlx-instinct-import-style
+trigger: "When importing modules within the package"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in importStyle
+- Imports in vllm_mlx/ are relative
+
+---
+id: vllm-mlx-instinct-export-style
+trigger: "When exporting functions or classes"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+- Named exports in vllm_mlx/
+
+---
+id: vllm-mlx-instinct-test-location
+trigger: "When adding or updating tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Test Location
+
+## Action
+
+Place test files in the separate tests/ directory
+
+## Evidence
+
+- tests located in tests/ folder
+- architecture.testLocation is 'separate'
+
+---
+id: vllm-mlx-instinct-test-pattern
+trigger: "When naming a test file"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Test Pattern
+
+## Action
+
+Use the pattern *.test.ts for test files
+
+## Evidence
+
+- testing.filePattern is '*.test.ts'
+- Examples in tests/
+
+---
+id: vllm-mlx-instinct-unit-tests
+trigger: "When writing tests for new or changed code"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Unit Tests
+
+## Action
+
+Write unit tests to cover the changes
+
+## Evidence
+
+- testing.testTypes includes 'unit'
+- All workflows include test updates
+
+---
+id: vllm-mlx-instinct-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Commit Format
+
+## Action
+
+Use Conventional Commits format with prefixes like fix, feat, perf, test, style
+
+## Evidence
+
+- commits.type is 'conventional'
+- Examples: 'fix(mcp): ...', 'feat(tools): ...'
+
+---
+id: vllm-mlx-instinct-commit-length
+trigger: "When composing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Commit Length
+
+## Action
+
+Keep commit messages concise (around 43 characters on average)
+
+## Evidence
+
+- commits.averageLength is 43
+- Commit examples are concise
+
+---
+id: vllm-mlx-instinct-feature-bugfix-with-test
+trigger: "When adding a new feature or fixing a bug"
+confidence: 0.98
+domain: workflow
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Feature Bugfix With Test
+
+## Action
+
+Edit or create implementation files and corresponding tests, then commit both together
+
+## Evidence
+
+- Workflow 'feature-or-bugfix-with-test'
+- Commit sequences in workflow examples
+
+---
+id: vllm-mlx-instinct-api-server-change-with-test
+trigger: "When modifying API or server logic"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Api Server Change With Test
+
+## Action
+
+Edit server/api files and corresponding tests, then commit both together
+
+## Evidence
+
+- Workflow 'api-or-server-change-with-test'
+- Commit sequences in workflow examples
+
+---
+id: vllm-mlx-instinct-tool-parser-extension-with-tests
+trigger: "When adding or updating a tool parser"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Tool Parser Extension With Tests
+
+## Action
+
+Edit or add tool parser files and corresponding tests, update __init__.py if needed, then commit together
+
+## Evidence
+
+- Workflow 'tool-parser-extension-with-tests'
+- Commit sequences in workflow examples
+
+---
+id: vllm-mlx-instinct-cli-model-workflow-feature
+trigger: "When implementing or extending CLI/model artifact workflows"
+confidence: 0.88
+domain: workflow
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Cli Model Workflow Feature
+
+## Action
+
+Edit CLI/model files, update documentation and tests, then commit all related changes together
+
+## Evidence
+
+- Workflow 'cli-or-model-workflow-feature'
+- Commit sequences in workflow examples
+
+---
+id: vllm-mlx-instinct-scheduler-batching-change-with-test
+trigger: "When modifying batching or scheduler logic"
+confidence: 0.87
+domain: workflow
+source: repo-analysis
+source_repo: laywens/vllm-mlx
+---
+
+# Vllm Mlx Instinct Scheduler Batching Change With Test
+
+## Action
+
+Edit batching/scheduler files and corresponding tests, then commit both together
+
+## Evidence
+
+- Workflow 'scheduler-or-batching-change-with-test'
+- Commit sequences in workflow examples
+
