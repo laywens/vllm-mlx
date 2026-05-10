@@ -9,8 +9,8 @@ from vllm_mlx.memory_cache import (
     CacheStats,
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
-    _CacheEntry,
     _array_memory,
+    _CacheEntry,
     _get_available_memory,
     estimate_kv_cache_memory,
 )
@@ -421,6 +421,46 @@ class TestMemoryAwarePrefixCache:
             cache.store([i], mock_kv_cache(100))
 
         assert len(cache) <= 3
+
+    def test_save_to_disk_dequantizes_quantized_entries(
+        self, model, monkeypatch, tmp_path
+    ):
+        """Persisted cache entries must be normal cache layers, not quant wrappers."""
+        import mlx_lm.models.cache as mlx_cache
+
+        import vllm_mlx.memory_cache as memory_cache
+
+        config = MemoryCacheConfig(max_memory_mb=1, kv_quantize=True)
+        cache = MemoryAwarePrefixCache(model, config)
+
+        quantized_layer = object()
+        dequantized_layer = object()
+        cache._entries[(1, 2, 3)] = _CacheEntry(
+            tokens=(1, 2, 3),
+            cache=[quantized_layer],
+            memory_bytes=1,
+        )
+        cache._current_memory = 1
+
+        captured = {}
+
+        def fake_dequantize(cache_layers):
+            captured["dequantize_input"] = cache_layers
+            return [dequantized_layer]
+
+        def fake_save_prompt_cache(path, prompt_cache, metadata):
+            captured["path"] = path
+            captured["saved_cache"] = prompt_cache
+            captured["metadata"] = metadata
+
+        monkeypatch.setattr(memory_cache, "_dequantize_cache", fake_dequantize)
+        monkeypatch.setattr(mlx_cache, "save_prompt_cache", fake_save_prompt_cache)
+
+        assert cache.save_to_disk(str(tmp_path)) is True
+
+        assert captured["dequantize_input"] == [quantized_layer]
+        assert captured["saved_cache"] == [dequantized_layer]
+        assert captured["metadata"] == {"num_tokens": "3"}
 
 
 class TestGetAvailableMemory:

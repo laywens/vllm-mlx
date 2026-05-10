@@ -892,9 +892,14 @@ class MemoryAwarePrefixCache:
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
             entry_path = os.path.join(cache_dir, f"entry_{i}.safetensors")
             try:
+                persist_cache = (
+                    _dequantize_cache(entry.cache)
+                    if self._config.kv_quantize
+                    else entry.cache
+                )
                 save_prompt_cache(
                     entry_path,
-                    entry.cache,
+                    persist_cache,
                     metadata={"num_tokens": str(len(tokens_key))},
                 )
                 # Save tokens separately (can be 100K+ ints → binary is smaller)
