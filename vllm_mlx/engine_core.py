@@ -233,7 +233,9 @@ class EngineCore:
         if not self._should_keep_scheduler_step_affinity():
             self._clear_scheduler_step_affinity()
 
-    def _maybe_clear_finished_output_cache(self, finished_request_ids: List[str]) -> bool:
+    def _maybe_clear_finished_output_cache(
+        self, finished_request_ids: List[str]
+    ) -> bool:
         """Clear MLX cache for finished outputs when the configured cadence is due."""
         if not self.config.clear_finished_output_cache or not finished_request_ids:
             return False
@@ -279,6 +281,28 @@ class EngineCore:
             max_workers=1, thread_name_prefix="mlx-step"
         )
         loop = asyncio.get_running_loop()
+        executor_streams_bound = False
+        inline_streams_bound = False
+
+        def _bind_executor_streams_once() -> None:
+            nonlocal executor_streams_bound
+            if not executor_streams_bound:
+                bind_generation_streams()
+                executor_streams_bound = True
+
+        def _bind_inline_streams_once() -> None:
+            nonlocal inline_streams_bound
+            if not inline_streams_bound:
+                bind_generation_streams()
+                inline_streams_bound = True
+
+        def _step_on_executor():
+            _bind_executor_streams_once()
+            return self.scheduler.step()
+
+        def _close_batch_generator_on_executor() -> None:
+            _bind_executor_streams_once()
+            self.scheduler._close_batch_generator()
 
         step_interval = self.config.step_interval
         stream_interval = self.config.stream_interval
@@ -308,15 +332,14 @@ class EngineCore:
 
                     if needs_executor:
                         output = await loop.run_in_executor(
-                            _executor, self.scheduler.step
+                            _executor, _step_on_executor
                         )
                     else:
+                        _bind_inline_streams_once()
                         output = self.scheduler.step()
                         # Yield to event loop after inline step
                         await asyncio.sleep(0)
-                    self._record_scheduler_step_execution(
-                        used_executor=needs_executor
-                    )
+                    self._record_scheduler_step_execution(used_executor=needs_executor)
                     self._steps_executed += 1
 
                     # Emergency memory pressure check
@@ -377,8 +400,13 @@ class EngineCore:
                     await asyncio.sleep(step_interval)
 
             except asyncio.CancelledError:
-                _executor.shutdown(wait=True)
-                self.scheduler._close_batch_generator()
+                try:
+                    await loop.run_in_executor(
+                        _executor,
+                        _close_batch_generator_on_executor,
+                    )
+                finally:
+                    _executor.shutdown(wait=True)
                 raise
             except Exception as e:
                 import traceback
@@ -386,8 +414,10 @@ class EngineCore:
                 logger.error(f"Engine loop error: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(0.1)
 
-        _executor.shutdown(wait=True)
-        self.scheduler._close_batch_generator()
+        try:
+            await loop.run_in_executor(_executor, _close_batch_generator_on_executor)
+        finally:
+            _executor.shutdown(wait=True)
 
     async def add_request(
         self,
