@@ -675,6 +675,8 @@ class TestMLLMSamplingControls:
             prompt="hello",
             temperature=0.3,
             top_p=0.8,
+            top_k=20,
+            min_p=0.15,
         )
         request.input_ids = mx.array([[42]], dtype=mx.uint32)
 
@@ -684,7 +686,9 @@ class TestMLLMSamplingControls:
         assert batch.samplers == [request_sampler]
         request_sampler.assert_called_once()
         fallback_sampler.assert_not_called()
-        assert sampler_calls == [{"temp": 0.3, "top_p": 0.8}]
+        assert sampler_calls == [
+            {"temp": 0.3, "top_p": 0.8, "top_k": 20, "min_p": 0.15}
+        ]
 
     def test_next_uses_request_sampler_for_decode_token(self):
         from vllm_mlx.mllm_batch_generator import (
@@ -724,6 +728,132 @@ class TestMLLMSamplingControls:
         assert generator.active_batch.y.tolist() == [3]
         request_sampler.assert_called_once()
         fallback_sampler.assert_not_called()
+
+    def test_next_applies_request_logits_processors_for_decode_token(self):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatch,
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+            MLLMBatchStats,
+        )
+
+        seen_output_tokens = []
+
+        def presence_processor(output_tokens, logits):
+            seen_output_tokens.append(output_tokens.tolist())
+            return logits
+
+        request_sampler = MagicMock(return_value=mx.array([3], dtype=mx.uint32))
+
+        request = MLLMBatchRequest(uid=7, request_id="req-7", prompt="hello")
+        request.output_tokens.extend([1, 2])
+        generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+        generator._stats = MLLMBatchStats()
+        generator.stop_tokens = set()
+        generator.unprocessed_requests = []
+        generator.language_model = MagicMock(
+            return_value=mx.array([[[0.0, 1.0, 2.0, 3.0]]])
+        )
+        generator.sampler = MagicMock(return_value=mx.array([1], dtype=mx.uint32))
+        generator.active_batch = MLLMBatch(
+            uids=[7],
+            request_ids=["req-7"],
+            y=mx.array([5], dtype=mx.uint32),
+            logprobs=[mx.array([0.5, 0.5])],
+            max_tokens=[4],
+            num_tokens=[0],
+            cache=[],
+            requests=[request],
+            logits_processors=[[presence_processor]],
+            samplers=[request_sampler],
+        )
+
+        responses = MLLMBatchGenerator._next(generator)
+
+        assert [response.token for response in responses] == [5]
+        assert seen_output_tokens == [[1, 2]]
+        request_sampler.assert_called_once()
+        generator.sampler.assert_not_called()
+
+
+class TestMLLMSchedulerSamplingParams:
+    """Tests for sampling parameter propagation in scheduler request state."""
+
+    def test_add_request_stores_full_sampling_params(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        model = MagicMock()
+        model.config = None
+        processor = MagicMock()
+        processor.tokenizer = MagicMock()
+        processor.tokenizer.eos_token_id = 2
+        processor.tokenizer.eos_token_ids = None
+
+        scheduler = MLLMScheduler(
+            model=model,
+            processor=processor,
+            config=MLLMSchedulerConfig(enable_vision_cache=False),
+        )
+
+        request_id = scheduler.add_request(
+            prompt="Describe",
+            max_tokens=32,
+            top_k=40,
+            min_p=0.2,
+            presence_penalty=0.4,
+            repetition_penalty=1.2,
+        )
+        request = scheduler.get_request(request_id)
+
+        assert request is not None
+        assert request.sampling_params.top_k == 40
+        assert request.sampling_params.min_p == 0.2
+        assert request.sampling_params.presence_penalty == 0.4
+        assert request.sampling_params.repetition_penalty == 1.2
+
+    def test_schedule_waiting_propagates_sampling_params_to_batch_request(self):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        class DummyBatchGenerator:
+            def __init__(self):
+                self.inserted = None
+
+            def insert(self, batch_requests):
+                self.inserted = batch_requests
+                return list(range(100, 100 + len(batch_requests)))
+
+        model = MagicMock()
+        model.config = None
+        processor = MagicMock()
+        processor.tokenizer = MagicMock()
+        processor.tokenizer.eos_token_id = 2
+        processor.tokenizer.eos_token_ids = None
+
+        scheduler = MLLMScheduler(
+            model=model,
+            processor=processor,
+            config=MLLMSchedulerConfig(enable_vision_cache=False),
+        )
+        dummy_batch = DummyBatchGenerator()
+        scheduler.batch_generator = dummy_batch
+
+        scheduler.add_request(
+            prompt="Describe",
+            max_tokens=16,
+            top_k=24,
+            min_p=0.1,
+            presence_penalty=0.3,
+            repetition_penalty=1.15,
+        )
+        scheduled = scheduler._schedule_waiting()
+
+        assert len(scheduled) == 1
+        assert dummy_batch.inserted is not None
+        assert len(dummy_batch.inserted) == 1
+        assert dummy_batch.inserted[0].top_k == 24
+        assert dummy_batch.inserted[0].min_p == 0.1
+        assert dummy_batch.inserted[0].presence_penalty == 0.3
+        assert dummy_batch.inserted[0].repetition_penalty == 1.15
 
 
 class TestMLLMSchedulerVideoParams:

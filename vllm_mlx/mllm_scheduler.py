@@ -312,6 +312,9 @@ class MLLMScheduler:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=kwargs.get("top_k") or 0,
+            min_p=kwargs.get("min_p") or 0.0,
+            presence_penalty=kwargs.get("presence_penalty") or 0.0,
             repetition_penalty=kwargs.get("repetition_penalty") or 1.0,
         )
 
@@ -438,6 +441,10 @@ class MLLMScheduler:
                 max_tokens=request.sampling_params.max_tokens,
                 temperature=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
+                top_k=request.sampling_params.top_k,
+                min_p=request.sampling_params.min_p,
+                presence_penalty=request.sampling_params.presence_penalty,
+                repetition_penalty=request.sampling_params.repetition_penalty,
             )
             batch_requests.append(batch_req)
 

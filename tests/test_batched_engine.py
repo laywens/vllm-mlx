@@ -77,6 +77,36 @@ class TestBatchedEngineGenerate:
         assert result.finish_reason == "stop"
 
     @pytest.mark.anyio
+    async def test_mllm_generate_passes_sampling_params(self):
+        engine = self._make_engine(is_mllm=True)
+        engine._mllm_scheduler = SimpleNamespace(
+            generate=AsyncMock(
+                return_value=SimpleNamespace(
+                    output_text="Done",
+                    output_token_ids=[101],
+                    prompt_tokens=5,
+                    completion_tokens=1,
+                    finish_reason="stop",
+                )
+            )
+        )
+
+        await engine.generate(
+            prompt="Describe this",
+            max_tokens=10,
+            top_k=32,
+            min_p=0.15,
+            presence_penalty=0.4,
+            repetition_penalty=1.2,
+        )
+
+        kwargs = engine._mllm_scheduler.generate.await_args.kwargs
+        assert kwargs["top_k"] == 32
+        assert kwargs["min_p"] == 0.15
+        assert kwargs["presence_penalty"] == 0.4
+        assert kwargs["repetition_penalty"] == 1.2
+
+    @pytest.mark.anyio
     async def test_mllm_chat_routes_audio_from_messages(self):
         engine = self._make_engine(is_mllm=True)
         engine._processor = MagicMock()

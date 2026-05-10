@@ -48,6 +48,10 @@ class MLLMBatchRequest:
     max_tokens: int = 256
     temperature: float = 0.7
     top_p: float = 0.9
+    top_k: int = 0
+    min_p: float = 0.0
+    presence_penalty: float = 0.0
+    repetition_penalty: float = 1.0
     video_fps: float = 2.0
     video_max_frames: int = 128
 
@@ -101,6 +105,7 @@ class MLLMBatch:
     num_tokens: List[int]  # Tokens generated per request
     cache: List[Any]  # BatchKVCache for language model
     requests: List[MLLMBatchRequest]  # Full request data
+    logits_processors: list[list[Callable] | None] | None = None
     samplers: list[Callable[[mx.array], mx.array] | None] | None = None
 
     def __len__(self) -> int:
@@ -119,6 +124,8 @@ class MLLMBatch:
         self.max_tokens = [self.max_tokens[k] for k in keep_idx]
         self.num_tokens = [self.num_tokens[k] for k in keep_idx]
         self.requests = [self.requests[k] for k in keep_idx]
+        if self.logits_processors is not None:
+            self.logits_processors = [self.logits_processors[k] for k in keep_idx]
         if self.samplers is not None:
             self.samplers = [self.samplers[k] for k in keep_idx]
 
@@ -146,6 +153,10 @@ class MLLMBatch:
         current_request_count = len(self.requests)
         other_request_count = len(other.requests)
         self.requests.extend(other.requests)
+        if self.logits_processors is not None or other.logits_processors is not None:
+            self.logits_processors = list(
+                self.logits_processors or [None] * current_request_count
+            ) + list(other.logits_processors or [None] * other_request_count)
         if self.samplers is not None or other.samplers is not None:
             self.samplers = list(
                 self.samplers or [None] * current_request_count
@@ -746,13 +757,37 @@ class MLLMBatchGenerator:
             MLLMBatch ready for generation
         """
         from mlx_lm.models.cache import make_prompt_cache
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         tic = time.perf_counter()
         samplers_by_request = {
-            req.request_id: make_sampler(temp=req.temperature, top_p=req.top_p)
+            req.request_id: make_sampler(
+                temp=req.temperature,
+                top_p=req.top_p,
+                top_k=req.top_k,
+                min_p=req.min_p,
+            )
             for req in requests
         }
+        logits_processors_by_request: dict[str, list[Callable] | None] = {}
+        for req in requests:
+            need_repetition_penalty = (
+                req.repetition_penalty is not None and req.repetition_penalty != 1.0
+            )
+            need_presence_penalty = (
+                req.presence_penalty is not None and req.presence_penalty != 0.0
+            )
+            if need_repetition_penalty or need_presence_penalty:
+                processor_kwargs = {}
+                if need_repetition_penalty:
+                    processor_kwargs["repetition_penalty"] = req.repetition_penalty
+                if need_presence_penalty:
+                    processor_kwargs["presence_penalty"] = req.presence_penalty
+                logits_processors_by_request[req.request_id] = make_logits_processors(
+                    **processor_kwargs
+                )
+            else:
+                logits_processors_by_request[req.request_id] = None
 
         # Preprocess all requests
         for req in requests:
@@ -840,6 +875,9 @@ class MLLMBatchGenerator:
             num_tokens=[0] * len(requests),
             cache=batch_cache,
             requests=requests,
+            logits_processors=[
+                logits_processors_by_request[req.request_id] for req in requests
+            ],
             samplers=[samplers_by_request[req.request_id] for req in requests],
         )
 
@@ -863,6 +901,8 @@ class MLLMBatchGenerator:
         self,
         input_tokens: mx.array,
         cache: List[Any],
+        logits_processors: list[list[Callable] | None] | None = None,
+        output_tokens: list[list[int]] | None = None,
         samplers: list[Callable[[mx.array], mx.array] | None] | None = None,
     ) -> Tuple[mx.array, List[mx.array]]:
         """
@@ -890,7 +930,18 @@ class MLLMBatchGenerator:
 
         logits = logits[:, -1, :]
 
-        # Sample
+        if logits_processors and output_tokens and any(logits_processors):
+            processed_logits = []
+            for idx in range(logits.shape[0]):
+                sample_logits = logits[idx : idx + 1]
+                if logits_processors[idx]:
+                    for processor in logits_processors[idx]:
+                        sample_logits = processor(
+                            mx.array(output_tokens[idx]), sample_logits
+                        )
+                processed_logits.append(sample_logits)
+            logits = mx.concatenate(processed_logits, axis=0)
+
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         sampled = self._sample_logprobs(logprobs, samplers)
 
@@ -932,9 +983,16 @@ class MLLMBatchGenerator:
             return []
 
         y, logprobs = batch.y, batch.logprobs
+        output_tokens = (
+            [req.output_tokens for req in batch.requests]
+            if batch.logits_processors
+            else None
+        )
         batch.y, batch.logprobs = self._step(
             y[:, None],
             batch.cache,
+            batch.logits_processors,
+            output_tokens,
             batch.samplers,
         )
         mx.async_eval(batch.y, batch.logprobs)

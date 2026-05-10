@@ -595,6 +595,9 @@ class BatchedEngine(BaseEngine):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                top_k=kwargs.get("top_k", 0),
+                min_p=kwargs.get("min_p", 0.0),
+                presence_penalty=kwargs.get("presence_penalty", 0.0),
                 repetition_penalty=kwargs.get("repetition_penalty"),
             )
 
@@ -613,6 +616,9 @@ class BatchedEngine(BaseEngine):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=kwargs.get("top_k", 0),
+            min_p=kwargs.get("min_p", 0.0),
+            presence_penalty=kwargs.get("presence_penalty", 0.0),
             repetition_penalty=kwargs.get("repetition_penalty") or 1.0,
             repetition_policy=kwargs.get("repetition_policy"),
             stop=stop or [],
@@ -679,6 +685,9 @@ class BatchedEngine(BaseEngine):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
+                top_k=kwargs.get("top_k", 0),
+                min_p=kwargs.get("min_p", 0.0),
+                presence_penalty=kwargs.get("presence_penalty", 0.0),
                 repetition_penalty=kwargs.get("repetition_penalty"),
             )
 
@@ -700,6 +709,9 @@ class BatchedEngine(BaseEngine):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            top_k=kwargs.get("top_k", 0),
+            min_p=kwargs.get("min_p", 0.0),
+            presence_penalty=kwargs.get("presence_penalty", 0.0),
             repetition_penalty=kwargs.get("repetition_penalty") or 1.0,
             repetition_policy=kwargs.get("repetition_policy"),
             stop=stop or [],

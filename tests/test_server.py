@@ -136,6 +136,9 @@ class TestChatCompletionRequest:
             messages=[Message(role="user", content="Hello")],
             max_tokens=100,
             temperature=0.5,
+            top_k=32,
+            min_p=0.15,
+            presence_penalty=0.4,
             frequency_penalty=0.3,
             repetition_penalty=1.2,
             repetition_policy_override="strict",
@@ -148,6 +151,9 @@ class TestChatCompletionRequest:
 
         assert request.max_tokens == 100
         assert request.temperature == 0.5
+        assert request.top_k == 32
+        assert request.min_p == 0.15
+        assert request.presence_penalty == 0.4
         assert request.frequency_penalty == 0.3
         assert request.repetition_penalty == 1.2
         assert request.repetition_policy_override == "strict"
@@ -2502,6 +2508,58 @@ class TestChatCompletionMessagePreparation:
             "server_default_only": "yes",
             "request_only": 1,
         }
+
+    @pytest.mark.anyio
+    async def test_chat_completion_passes_extended_sampling_params(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import vllm_mlx.server as server
+
+        captured = {}
+
+        class CapturingEngine:
+            is_mllm = False
+            preserve_native_tool_format = False
+
+            async def chat(self, *, messages, **kwargs):
+                captured["kwargs"] = kwargs
+                return SimpleNamespace(
+                    text="done",
+                    tokens=[],
+                    prompt_tokens=4,
+                    completion_tokens=1,
+                    finish_reason="stop",
+                    stop_reason=None,
+                    stop_reason_detail=None,
+                )
+
+        async def await_result(result, raw_request, timeout):
+            del raw_request, timeout
+            return await result
+
+        monkeypatch.setattr(server, "get_engine", lambda: CapturingEngine())
+        monkeypatch.setattr(server, "_wait_with_disconnect", await_result)
+        monkeypatch.setattr(server, "_strict_model_id", False)
+        monkeypatch.setattr(server, "_model_name", "test-model")
+        monkeypatch.setattr(server, "_reasoning_parser", None)
+
+        request = server.ChatCompletionRequest(
+            model="test-model",
+            messages=[server.Message(role="user", content="Hello")],
+            max_tokens=8,
+            top_k=32,
+            min_p=0.15,
+            presence_penalty=0.4,
+        )
+
+        await server.create_chat_completion(
+            request,
+            raw_request=SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")),
+        )
+
+        assert captured["kwargs"]["top_k"] == 32
+        assert captured["kwargs"]["min_p"] == 0.15
+        assert captured["kwargs"]["presence_penalty"] == 0.4
 
     @pytest.mark.anyio
     async def test_mllm_native_tool_arguments_are_json_objects(self, monkeypatch):

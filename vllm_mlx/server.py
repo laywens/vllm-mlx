@@ -607,6 +607,21 @@ def _resolve_chat_template_kwargs(
     return resolved
 
 
+def _build_extended_sampling_kwargs(request: Any) -> dict[str, int | float]:
+    """Build non-OpenAI core sampling kwargs supported by MLX backends."""
+    sampling_kwargs: dict[str, int | float] = {}
+    top_k = getattr(request, "top_k", None)
+    if top_k is not None:
+        sampling_kwargs["top_k"] = top_k
+    min_p = getattr(request, "min_p", None)
+    if min_p is not None:
+        sampling_kwargs["min_p"] = min_p
+    presence_penalty = getattr(request, "presence_penalty", None)
+    if presence_penalty is not None:
+        sampling_kwargs["presence_penalty"] = presence_penalty
+    return sampling_kwargs
+
+
 def _json_object_arg(flag_name: str):
     """Build an argparse type parser that accepts only JSON objects."""
 
@@ -4598,6 +4613,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 max_tokens=effective_max_tokens,
                 temperature=_resolve_temperature(request.temperature),
                 top_p=_resolve_top_p(request.top_p),
+                **_build_extended_sampling_kwargs(request),
                 repetition_penalty=_resolve_repetition_penalty(
                     request.repetition_penalty,
                     request.frequency_penalty,
@@ -4819,6 +4835,7 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
         "top_p": _resolve_top_p(request.top_p),
         "stop": request.stop,
         "repetition_policy": effective_repetition_policy,
+        **_build_extended_sampling_kwargs(request),
     }
     repetition_penalty = _resolve_repetition_penalty(
         request.repetition_penalty,
@@ -5089,6 +5106,7 @@ async def create_anthropic_message(
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
         "repetition_policy": _normalize_repetition_policy(_repetition_policy),
+        **_build_extended_sampling_kwargs(openai_request),
     }
     repetition_penalty = _resolve_repetition_penalty(
         openai_request.repetition_penalty,
@@ -5300,6 +5318,7 @@ async def _stream_anthropic_messages(
         "temperature": openai_request.temperature,
         "top_p": openai_request.top_p,
         "repetition_policy": _normalize_repetition_policy(_repetition_policy),
+        **_build_extended_sampling_kwargs(openai_request),
     }
     repetition_penalty = _resolve_repetition_penalty(
         openai_request.repetition_penalty,

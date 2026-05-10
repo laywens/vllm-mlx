@@ -111,6 +111,8 @@ class MLXLanguageModel:
         self,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        top_k: int = 0,
+        min_p: float = 0.0,
     ):
         """Create a sampler for text generation."""
         from mlx_lm.sample_utils import make_sampler
@@ -118,18 +120,26 @@ class MLXLanguageModel:
         return make_sampler(
             temp=temperature,
             top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
         )
 
     def _create_logits_processors(
         self,
         repetition_penalty: float = 1.0,
+        presence_penalty: float = 0.0,
     ):
         """Create optional logits processors for generation."""
-        if repetition_penalty == 1.0:
+        if repetition_penalty == 1.0 and presence_penalty == 0.0:
             return None
         from mlx_lm.sample_utils import make_logits_processors
 
-        return make_logits_processors(repetition_penalty=repetition_penalty)
+        return make_logits_processors(
+            repetition_penalty=(
+                repetition_penalty if repetition_penalty != 1.0 else None
+            ),
+            presence_penalty=(presence_penalty if presence_penalty != 0.0 else None),
+        )
 
     def generate(
         self,
@@ -137,6 +147,9 @@ class MLXLanguageModel:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        presence_penalty: float = 0.0,
         repetition_penalty: float = 1.0,
         stop: list[str] | None = None,
     ) -> GenerationOutput:
@@ -160,8 +173,10 @@ class MLXLanguageModel:
         from mlx_lm import generate
 
         # Create sampler with parameters
-        sampler = self._create_sampler(temperature, top_p)
-        logits_processors = self._create_logits_processors(repetition_penalty)
+        sampler = self._create_sampler(temperature, top_p, top_k, min_p)
+        logits_processors = self._create_logits_processors(
+            repetition_penalty, presence_penalty
+        )
 
         # Generate text
         output_text = generate(
@@ -192,6 +207,9 @@ class MLXLanguageModel:
         max_tokens: int = 256,
         temperature: float = 0.7,
         top_p: float = 0.9,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        presence_penalty: float = 0.0,
         repetition_penalty: float = 1.0,
         stop: list[str] | None = None,
     ) -> Iterator[StreamingOutput]:
@@ -215,8 +233,10 @@ class MLXLanguageModel:
         from mlx_lm import stream_generate
 
         # Create sampler with parameters
-        sampler = self._create_sampler(temperature, top_p)
-        logits_processors = self._create_logits_processors(repetition_penalty)
+        sampler = self._create_sampler(temperature, top_p, top_k, min_p)
+        logits_processors = self._create_logits_processors(
+            repetition_penalty, presence_penalty
+        )
 
         num_prompt_tokens = len(self.tokenizer.encode(prompt))
         token_count = 0
