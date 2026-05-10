@@ -18,6 +18,7 @@ import base64
 import os
 import sys
 import tempfile
+from contextlib import nullcontext
 from types import ModuleType
 from unittest.mock import MagicMock
 
@@ -627,6 +628,102 @@ class TestPreprocessIdempotent:
         await scheduler._process_loop()
 
         assert step_saw_preprocessed == [True]
+
+
+class TestMLLMSamplingControls:
+    def test_process_prompts_uses_request_sampler_for_first_token(self, monkeypatch):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+            MLLMBatchStats,
+        )
+
+        class FakeCache:
+            def merge(self, caches):
+                return self
+
+        request_sampler = MagicMock(return_value=mx.array([3], dtype=mx.uint32))
+        fallback_sampler = MagicMock(return_value=mx.array([1], dtype=mx.uint32))
+        sampler_calls = []
+
+        def fake_make_sampler(**kwargs):
+            sampler_calls.append(kwargs)
+            return request_sampler
+
+        monkeypatch.setattr(mx, "stream", lambda stream: nullcontext())
+        monkeypatch.setattr(
+            "mlx_lm.models.cache.make_prompt_cache",
+            lambda model, max_kv_size=None: [FakeCache()],
+        )
+        monkeypatch.setattr("mlx_lm.sample_utils.make_sampler", fake_make_sampler)
+
+        generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+        generator._stats = MLLMBatchStats()
+        generator.prefill_step_size = 512
+        generator.language_model = object()
+        generator.model = MagicMock()
+        generator.sampler = fallback_sampler
+        generator.max_kv_size = 0
+        generator._preprocess_request = lambda req: None
+        generator._run_vision_encoding = lambda req, cache: mx.array(
+            [[[0.0, 1.0, 2.0, 3.0]]]
+        )
+
+        request = MLLMBatchRequest(
+            uid=7,
+            request_id="req-7",
+            prompt="hello",
+            temperature=0.3,
+            top_p=0.8,
+        )
+        request.input_ids = mx.array([[42]], dtype=mx.uint32)
+
+        batch = MLLMBatchGenerator._process_prompts(generator, [request])
+
+        assert batch.y.tolist() == [3]
+        assert batch.samplers == [request_sampler]
+        request_sampler.assert_called_once()
+        fallback_sampler.assert_not_called()
+        assert sampler_calls == [{"temp": 0.3, "top_p": 0.8}]
+
+    def test_next_uses_request_sampler_for_decode_token(self):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatch,
+            MLLMBatchGenerator,
+            MLLMBatchRequest,
+            MLLMBatchStats,
+        )
+
+        request_sampler = MagicMock(return_value=mx.array([3], dtype=mx.uint32))
+        fallback_sampler = MagicMock(return_value=mx.array([1], dtype=mx.uint32))
+
+        request = MLLMBatchRequest(uid=7, request_id="req-7", prompt="hello")
+        generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+        generator._stats = MLLMBatchStats()
+        generator.stop_tokens = set()
+        generator.unprocessed_requests = []
+        generator.language_model = MagicMock(
+            return_value=mx.array([[[0.0, 1.0, 2.0, 3.0]]])
+        )
+        generator.sampler = fallback_sampler
+        generator.active_batch = MLLMBatch(
+            uids=[7],
+            request_ids=["req-7"],
+            y=mx.array([5], dtype=mx.uint32),
+            logprobs=[mx.array([0.5, 0.5])],
+            max_tokens=[4],
+            num_tokens=[0],
+            cache=[],
+            requests=[request],
+            samplers=[request_sampler],
+        )
+
+        responses = MLLMBatchGenerator._next(generator)
+
+        assert [response.token for response in responses] == [5]
+        assert generator.active_batch.y.tolist() == [3]
+        request_sampler.assert_called_once()
+        fallback_sampler.assert_not_called()
 
 
 class TestMLLMSchedulerVideoParams:

@@ -101,6 +101,7 @@ class MLLMBatch:
     num_tokens: List[int]  # Tokens generated per request
     cache: List[Any]  # BatchKVCache for language model
     requests: List[MLLMBatchRequest]  # Full request data
+    samplers: list[Callable[[mx.array], mx.array] | None] | None = None
 
     def __len__(self) -> int:
         return len(self.uids)
@@ -118,6 +119,8 @@ class MLLMBatch:
         self.max_tokens = [self.max_tokens[k] for k in keep_idx]
         self.num_tokens = [self.num_tokens[k] for k in keep_idx]
         self.requests = [self.requests[k] for k in keep_idx]
+        if self.samplers is not None:
+            self.samplers = [self.samplers[k] for k in keep_idx]
 
         keep_idx_array = mx.array(keep_idx, mx.int32)
         self.y = self.y[keep_idx_array]
@@ -140,7 +143,13 @@ class MLLMBatch:
         self.logprobs.extend(other.logprobs)
         self.num_tokens.extend(other.num_tokens)
         self.max_tokens.extend(other.max_tokens)
+        current_request_count = len(self.requests)
+        other_request_count = len(other.requests)
         self.requests.extend(other.requests)
+        if self.samplers is not None or other.samplers is not None:
+            self.samplers = list(
+                self.samplers or [None] * current_request_count
+            ) + list(other.samplers or [None] * other_request_count)
 
         # Extend cache - handle None and incompatible caches. Some cache
         # integrations expose state only through empty()/extend() and do not
@@ -737,8 +746,13 @@ class MLLMBatchGenerator:
             MLLMBatch ready for generation
         """
         from mlx_lm.models.cache import make_prompt_cache
+        from mlx_lm.sample_utils import make_sampler
 
         tic = time.perf_counter()
+        samplers_by_request = {
+            req.request_id: make_sampler(temp=req.temperature, top_p=req.top_p)
+            for req in requests
+        }
 
         # Preprocess all requests
         for req in requests:
@@ -783,7 +797,8 @@ class MLLMBatchGenerator:
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
                 )
-                sampled = self.sampler(logprobs)
+                sampler = samplers_by_request.get(req.request_id) or self.sampler
+                sampled = sampler(logprobs)
 
                 mx.eval(sampled, logprobs)
 
@@ -825,10 +840,30 @@ class MLLMBatchGenerator:
             num_tokens=[0] * len(requests),
             cache=batch_cache,
             requests=requests,
+            samplers=[samplers_by_request[req.request_id] for req in requests],
         )
 
+    def _sample_logprobs(
+        self,
+        logprobs: mx.array,
+        samplers: list[Callable[[mx.array], mx.array] | None] | None = None,
+    ) -> mx.array:
+        if not samplers:
+            return self.sampler(logprobs)
+
+        sampled_tokens = []
+        for idx, sampler in enumerate(samplers):
+            sampled = (sampler or self.sampler)(logprobs[idx : idx + 1])
+            if sampled.ndim == 0:
+                sampled = sampled[None]
+            sampled_tokens.append(sampled)
+        return mx.concatenate(sampled_tokens)
+
     def _step(
-        self, input_tokens: mx.array, cache: List[Any]
+        self,
+        input_tokens: mx.array,
+        cache: List[Any],
+        samplers: list[Callable[[mx.array], mx.array] | None] | None = None,
     ) -> Tuple[mx.array, List[mx.array]]:
         """
         Run one generation step through the language model.
@@ -857,7 +892,7 @@ class MLLMBatchGenerator:
 
         # Sample
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-        sampled = self.sampler(logprobs)
+        sampled = self._sample_logprobs(logprobs, samplers)
 
         return sampled, list(logprobs)
 
@@ -897,7 +932,11 @@ class MLLMBatchGenerator:
             return []
 
         y, logprobs = batch.y, batch.logprobs
-        batch.y, batch.logprobs = self._step(y[:, None], batch.cache)
+        batch.y, batch.logprobs = self._step(
+            y[:, None],
+            batch.cache,
+            batch.samplers,
+        )
         mx.async_eval(batch.y, batch.logprobs)
 
         y = y.tolist()
