@@ -271,13 +271,22 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
     except ImportError:
         QuantizedKVCache = None  # noqa: N806
 
+    def _slice_to_offset(arr: Any, offset: int) -> Any:
+        shape = getattr(arr, "shape", None)
+        if shape is not None and len(shape) >= 3 and 0 <= offset < shape[-2]:
+            return arr[..., :offset, :]
+        return arr
+
     trimmed: list[Any] = []
     for layer_cache in cache:
         if QuantizedKVCache is not None and isinstance(layer_cache, QuantizedKVCache):
+            new_offset = max(layer_cache.offset - trim_by, 0)
             tc = QuantizedKVCache.__new__(QuantizedKVCache)
-            tc.keys = layer_cache.keys
-            tc.values = layer_cache.values
-            tc.offset = max(layer_cache.offset - trim_by, 0)
+            tc.keys = [_slice_to_offset(arr, new_offset) for arr in layer_cache.keys]
+            tc.values = [
+                _slice_to_offset(arr, new_offset) for arr in layer_cache.values
+            ]
+            tc.offset = new_offset
             tc.group_size = layer_cache.group_size
             tc.bits = layer_cache.bits
             trimmed.append(tc)
@@ -286,10 +295,11 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
             and hasattr(layer_cache, "keys")
             and not isinstance(layer_cache.keys, (list, tuple))
         ):
+            new_offset = max(layer_cache.offset - trim_by, 0)
             tc = KVCache.__new__(KVCache)
-            tc.keys = layer_cache.keys
-            tc.values = layer_cache.values
-            tc.offset = max(layer_cache.offset - trim_by, 0)
+            tc.keys = _slice_to_offset(layer_cache.keys, new_offset)
+            tc.values = _slice_to_offset(layer_cache.values, new_offset)
+            tc.offset = new_offset
             trimmed.append(tc)
         else:
             trimmed.append(layer_cache)
@@ -382,6 +392,9 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
                 *layer.values, group_size=layer.group_size, bits=layer.bits
             )
             kv.offset = layer.offset
+            if 0 <= kv.offset < kv.keys.shape[-2]:
+                kv.keys = kv.keys[..., : kv.offset, :]
+                kv.values = kv.values[..., : kv.offset, :]
             result.append(kv)
         else:
             result.append(layer)

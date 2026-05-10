@@ -11,7 +11,9 @@ from vllm_mlx.memory_cache import (
     MemoryCacheConfig,
     _array_memory,
     _CacheEntry,
+    _dequantize_cache,
     _get_available_memory,
+    _trim_cache_offset,
     estimate_kv_cache_memory,
 )
 
@@ -227,6 +229,56 @@ class TestCacheEntry:
         assert entry.tokens == (1, 2, 3)
         assert entry.cache is cache
         assert entry.memory_bytes == 200
+
+
+class TestTrimCacheOffset:
+    """Tests for trimming fetched LCP cache entries."""
+
+    def test_trim_cache_offset_slices_plain_kv_arrays_to_new_offset(self):
+        """Offset-only trims must not leave stale tokens visible through state."""
+        mx = pytest.importorskip("mlx.core")
+        cache_mod = pytest.importorskip("mlx_lm.models.cache")
+        kv_cache_cls = cache_mod.KVCache
+
+        layer = kv_cache_cls()
+        layer.keys = mx.arange(1 * 2 * 10 * 4, dtype=mx.float32).reshape(1, 2, 10, 4)
+        layer.values = mx.arange(1 * 2 * 10 * 4, dtype=mx.float32).reshape(1, 2, 10, 4)
+        layer.offset = 10
+
+        trimmed = _trim_cache_offset([layer], trim_by=7)
+        trimmed_layer = trimmed[0]
+
+        assert trimmed_layer.offset == 3
+        assert trimmed_layer.keys.shape[-2] == 3
+        assert trimmed_layer.values.shape[-2] == 3
+
+        keys_state, values_state = trimmed_layer.state
+        assert keys_state.shape[-2] == 3
+        assert values_state.shape[-2] == 3
+
+        # The stored source entry must remain unchanged for other requests.
+        assert layer.offset == 10
+        assert layer.keys.shape[-2] == 10
+        assert layer.values.shape[-2] == 10
+
+    def test_dequantize_cache_slices_trimmed_quantized_layers_to_offset(self):
+        """Quantized layers must not dequantize stale positions past offset."""
+        mx = pytest.importorskip("mlx.core")
+        cache_mod = pytest.importorskip("mlx_lm.models.cache")
+        kv_cache_cls = cache_mod.KVCache
+
+        layer = kv_cache_cls()
+        layer.keys = mx.ones((1, 2, 128, 64), dtype=mx.float32)
+        layer.values = mx.ones((1, 2, 128, 64), dtype=mx.float32)
+        layer.offset = 128
+
+        quantized = layer.to_quantized(group_size=64, bits=8)
+        trimmed_quantized = _trim_cache_offset([quantized], trim_by=96)[0]
+        dequantized = _dequantize_cache([trimmed_quantized])[0]
+
+        assert dequantized.offset == 32
+        assert dequantized.keys.shape[-2] == 32
+        assert dequantized.values.shape[-2] == 32
 
 
 class TestMemoryAwarePrefixCache:
