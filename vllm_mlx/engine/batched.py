@@ -245,11 +245,19 @@ class BatchedEngine(BaseEngine):
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from ..models.mllm import MLXMultimodalLM
 
+        enable_prefix_cache = getattr(
+            self._scheduler_config, "enable_prefix_cache", True
+        )
+        prefix_cache_size = getattr(self._scheduler_config, "prefix_cache_size", 50)
+        max_kv_size = getattr(self._scheduler_config, "max_kv_size", 0)
+
         # Load the MLLM model
         self._mllm_instance = MLXMultimodalLM(
             self._model_name,
             trust_remote_code=self._trust_remote_code,
-            max_kv_size=getattr(self._scheduler_config, "max_kv_size", 0),
+            enable_cache=enable_prefix_cache,
+            cache_size=prefix_cache_size,
+            max_kv_size=max_kv_size,
         )
         self._mllm_instance.load()
 
@@ -274,7 +282,6 @@ class BatchedEngine(BaseEngine):
         mllm_prefill_step_size = getattr(
             self._scheduler_config, "mllm_prefill_step_size", None
         )
-        max_kv_size = getattr(self._scheduler_config, "max_kv_size", 0)
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,

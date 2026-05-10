@@ -175,6 +175,73 @@ class TestBatchedEngineStats:
         }
 
 
+class TestBatchedEngineMllmStartup:
+    @pytest.mark.anyio
+    async def test_mllm_start_honors_prefix_cache_config(self, monkeypatch):
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        captured = {}
+
+        class FakeMLXMultimodalLM:
+            def __init__(self, *args, **kwargs):
+                captured["model_args"] = args
+                captured["model_kwargs"] = kwargs
+                self.model = object()
+                self.processor = object()
+
+            def load(self):
+                captured["model_loaded"] = True
+
+        class FakeMLLMSchedulerConfig:
+            def __init__(self, **kwargs):
+                captured["scheduler_config"] = kwargs
+
+        class FakeMLLMScheduler:
+            def __init__(self, *, model, processor, config):
+                captured["scheduler"] = {
+                    "model": model,
+                    "processor": processor,
+                    "config": config,
+                }
+
+            async def start(self):
+                captured["scheduler_started"] = True
+
+        monkeypatch.setattr("vllm_mlx.models.mllm.MLXMultimodalLM", FakeMLXMultimodalLM)
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_scheduler.MLLMSchedulerConfig",
+            FakeMLLMSchedulerConfig,
+        )
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_scheduler.MLLMScheduler",
+            FakeMLLMScheduler,
+        )
+
+        engine = BatchedEngine(
+            "test-model",
+            force_mllm=True,
+            scheduler_config=SimpleNamespace(
+                max_num_seqs=2,
+                prefill_batch_size=1,
+                completion_batch_size=3,
+                enable_vision_cache=True,
+                vision_cache_size=4,
+                mllm_prefill_step_size=128,
+                max_kv_size=99,
+                enable_prefix_cache=False,
+                prefix_cache_size=17,
+            ),
+        )
+
+        await engine._start_mllm()
+
+        assert captured["model_kwargs"].get("enable_cache") is False
+        assert captured["model_kwargs"].get("cache_size") == 17
+        assert captured["model_kwargs"]["max_kv_size"] == 99
+        assert captured["model_loaded"] is True
+        assert captured["scheduler_started"] is True
+
+
 class TestToolCallReplayNormalization:
     """Tests for OpenAI tool-call replay normalization before chat templating."""
 
