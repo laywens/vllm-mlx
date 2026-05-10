@@ -282,6 +282,9 @@ class BatchedEngine(BaseEngine):
         mllm_prefill_step_size = getattr(
             self._scheduler_config, "mllm_prefill_step_size", None
         )
+        chunked_prefill_tokens = getattr(
+            self._scheduler_config, "chunked_prefill_tokens", 0
+        )
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
@@ -291,6 +294,7 @@ class BatchedEngine(BaseEngine):
             enable_vision_cache=enable_vision_cache,
             vision_cache_size=vision_cache_size,
             max_kv_size=max_kv_size,
+            chunked_prefill_tokens=chunked_prefill_tokens,
         )
 
         # Create and start MLLM scheduler

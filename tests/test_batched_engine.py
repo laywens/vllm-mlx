@@ -257,6 +257,7 @@ class TestBatchedEngineMllmStartup:
                 enable_vision_cache=True,
                 vision_cache_size=4,
                 mllm_prefill_step_size=128,
+                chunked_prefill_tokens=256,
                 max_kv_size=99,
                 enable_prefix_cache=False,
                 prefix_cache_size=17,
@@ -268,6 +269,7 @@ class TestBatchedEngineMllmStartup:
         assert captured["model_kwargs"].get("enable_cache") is False
         assert captured["model_kwargs"].get("cache_size") == 17
         assert captured["model_kwargs"]["max_kv_size"] == 99
+        assert captured["scheduler_config"]["chunked_prefill_tokens"] == 256
         assert captured["model_loaded"] is True
         assert captured["scheduler_started"] is True
 

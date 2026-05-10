@@ -67,10 +67,14 @@ class MLLMSchedulerConfig:
     max_video_frames: int = 128
     # Maximum KV cache size per sequence (0 = unbounded; >0 enables RotatingKVCache)
     max_kv_size: int = 0
+    # Interleaved text prefill/decode budget per step (0 = disabled)
+    chunked_prefill_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.max_kv_size < 0:
             raise ValueError("max_kv_size must be >= 0")
+        if self.chunked_prefill_tokens < 0:
+            raise ValueError("chunked_prefill_tokens must be >= 0")
 
 
 @dataclass
@@ -271,6 +275,13 @@ class MLLMScheduler:
                 prefill_step_size=self.config.prefill_step_size,
                 max_kv_size=self.config.max_kv_size,
             )
+            if self.config.chunked_prefill_tokens > 0:
+                from .mllm_batch_generator import install_chunked_prefill_mllm
+
+                install_chunked_prefill_mllm(
+                    self.batch_generator,
+                    budget=self.config.chunked_prefill_tokens,
+                )
 
     # ========== Sync API (step-based) ==========
 

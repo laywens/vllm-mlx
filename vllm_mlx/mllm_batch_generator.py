@@ -30,6 +30,39 @@ from .vision_embedding_cache import VisionEmbeddingCache
 logger = logging.getLogger(__name__)
 
 
+def _cache_eval_tensors(cache: List[Any]) -> List[Any]:
+    """Return realized tensors that break lazy cache graphs between chunks."""
+    tensors: List[Any] = []
+    for layer_cache in cache:
+        keys = getattr(layer_cache, "keys", None)
+        values = getattr(layer_cache, "values", None)
+        if keys is not None or values is not None:
+            if keys is not None:
+                tensors.append(keys)
+            if values is not None:
+                tensors.append(values)
+            continue
+
+        try:
+            state = getattr(layer_cache, "state", None)
+        except AttributeError:
+            state = None
+        if state is None:
+            continue
+        if isinstance(state, (list, tuple)):
+            tensors.extend(item for item in state if item is not None)
+        else:
+            tensors.append(state)
+    return tensors
+
+
+def _eval_prompt_cache(cache: List[Any]) -> None:
+    """Evaluate all cache tensors used by hybrid chunked prefill."""
+    tensors = _cache_eval_tensors(cache)
+    if tensors:
+        mx.eval(*tensors)
+
+
 @dataclass
 class MLLMBatchRequest:
     """
@@ -1089,3 +1122,214 @@ class MLLMBatchGenerator:
     def has_pending(self) -> bool:
         """Check if there are pending or active requests."""
         return bool(self.unprocessed_requests or self.active_batch)
+
+
+def install_chunked_prefill_mllm(
+    batch_gen: "MLLMBatchGenerator",
+    budget: int = 1024,
+) -> None:
+    """Install interleaved text prefill/decode on an MLLMBatchGenerator.
+
+    The local MLLM generator cannot merge new prompt caches into an active batch
+    until a text-only prefill has completed. This hook keeps long text-only
+    prefills from monopolizing the scheduler loop by processing one prompt chunk
+    per ``_next()`` call, running the existing active decode path between
+    chunks when an active batch is present.
+    """
+    from mlx_lm.models.cache import make_prompt_cache
+    from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+    budget = int(budget)
+    if budget <= 0:
+        raise ValueError("budget must be > 0")
+
+    original_next = batch_gen._next
+    original_remove = batch_gen.remove
+    batch_gen._partial = None
+    batch_gen._chunked_prefill_budget = budget
+    if not hasattr(batch_gen, "_prefill_progress"):
+        batch_gen._prefill_progress = {}
+
+    def _is_text_only(req: MLLMBatchRequest) -> bool:
+        return not req.images and not req.videos and not req.audio
+
+    def _maybe_active_decode() -> List[MLLMBatchResponse]:
+        if batch_gen.active_batch is not None:
+            return original_next()
+        return []
+
+    def _request_sampling(req: MLLMBatchRequest):
+        processors = []
+        need_repetition = req.repetition_penalty is not None and (
+            req.repetition_penalty != 1.0
+        )
+        need_presence = req.presence_penalty is not None and req.presence_penalty != 0.0
+        if need_repetition or need_presence:
+            processor_kwargs = {}
+            if need_repetition:
+                processor_kwargs["repetition_penalty"] = req.repetition_penalty
+            if need_presence:
+                processor_kwargs["presence_penalty"] = req.presence_penalty
+            processors.extend(make_logits_processors(**processor_kwargs))
+        extra_processors = getattr(req, "logits_processors", None)
+        if extra_processors:
+            processors.extend(extra_processors)
+
+        sampler = make_sampler(
+            temp=req.temperature,
+            top_p=req.top_p,
+            top_k=req.top_k,
+            min_p=req.min_p,
+        )
+        return processors or None, sampler
+
+    def _finalize_partial() -> List[MLLMBatchResponse]:
+        partial = batch_gen._partial
+        req = partial["request"]
+        remaining = partial["remaining_ids"]
+
+        tic = time.perf_counter()
+        logits = batch_gen.language_model(remaining, cache=partial["cache"])
+        if hasattr(logits, "logits"):
+            logits = logits.logits
+
+        last_logits = logits[:, -1, :]
+        processors, sampler = _request_sampling(req)
+        if processors:
+            empty_tokens = mx.array([], dtype=mx.uint32)
+            for processor in processors:
+                last_logits = processor(empty_tokens, last_logits)
+
+        logprobs = last_logits - mx.logsumexp(last_logits, axis=-1, keepdims=True)
+        sampled = sampler(logprobs)
+        mx.eval(sampled, logprobs)
+
+        batch_gen._stats.prompt_time += time.perf_counter() - tic
+        partial["processed"] += remaining.shape[1]
+        partial["chunk_count"] += 1
+        batch_gen._prefill_progress[req.request_id] = (
+            partial["total"],
+            partial["total"],
+        )
+
+        req.vision_encoded = True
+        req.pixel_values = None
+        req.attention_mask = None
+        req.image_grid_thw = None
+        req.extra_kwargs.clear()
+
+        batch_cache = _normalize_generation_caches(
+            _merge_prefill_caches([partial["cache"]])
+        )
+        new_batch = MLLMBatch(
+            uids=[req.uid],
+            request_ids=[req.request_id],
+            y=sampled,
+            logprobs=[logprobs.squeeze(0)],
+            max_tokens=[req.max_tokens],
+            num_tokens=[0],
+            cache=batch_cache,
+            requests=[req],
+            logits_processors=[processors] if processors else None,
+            samplers=[sampler],
+        )
+
+        if batch_gen.active_batch is None:
+            batch_gen.active_batch = new_batch
+        else:
+            batch_gen.active_batch.extend(new_batch)
+
+        logger.info(
+            "[chunked-prefill-mllm] completed request=%s tokens=%d chunks=%d",
+            req.request_id[:12],
+            partial["total"],
+            partial["chunk_count"],
+        )
+        batch_gen._partial = None
+        mx.clear_cache()
+        return original_next()
+
+    def _continue_partial() -> List[MLLMBatchResponse]:
+        partial = batch_gen._partial
+        req = partial["request"]
+        remaining = partial["remaining_ids"]
+        step = batch_gen._chunked_prefill_budget
+
+        if remaining.shape[1] <= step:
+            return _finalize_partial()
+
+        tic = time.perf_counter()
+        batch_gen.language_model(remaining[:, :step], cache=partial["cache"])
+        _eval_prompt_cache(partial["cache"])
+        batch_gen._stats.prompt_time += time.perf_counter() - tic
+
+        partial["remaining_ids"] = remaining[:, step:]
+        partial["processed"] += step
+        partial["chunk_count"] += 1
+        batch_gen._prefill_progress[req.request_id] = (
+            partial["processed"],
+            partial["total"],
+        )
+        if partial["chunk_count"] % 4 == 0:
+            mx.clear_cache()
+
+        return _maybe_active_decode()
+
+    def _start_partial(req: MLLMBatchRequest) -> List[MLLMBatchResponse]:
+        batch_gen._preprocess_request(req)
+        input_ids = req.input_ids
+        if input_ids is None:
+            return original_next()
+        if input_ids.ndim == 1:
+            input_ids = input_ids[None, :]
+
+        total = input_ids.shape[1]
+        step = batch_gen._chunked_prefill_budget
+        if total <= step:
+            return original_next()
+
+        request_cache = make_prompt_cache(
+            batch_gen.language_model,
+            max_kv_size=batch_gen.max_kv_size or None,
+        )
+        batch_gen.unprocessed_requests.remove(req)
+        batch_gen._stats.prompt_tokens += total
+        batch_gen._partial = {
+            "request": req,
+            "cache": request_cache,
+            "remaining_ids": input_ids,
+            "processed": 0,
+            "total": total,
+            "chunk_count": 0,
+        }
+        logger.info(
+            "[chunked-prefill-mllm] starting request=%s tokens=%d budget=%d",
+            req.request_id[:12],
+            total,
+            step,
+        )
+        return _continue_partial()
+
+    def _chunked_next() -> List[MLLMBatchResponse]:
+        if batch_gen._partial is not None:
+            return _continue_partial()
+
+        for req in list(batch_gen.unprocessed_requests):
+            if _is_text_only(req):
+                return _start_partial(req)
+
+        return original_next()
+
+    def _patched_remove(uids: List[int]) -> None:
+        uid_set = set(uids)
+        partial = batch_gen._partial
+        if partial is not None and partial["request"].uid in uid_set:
+            batch_gen._prefill_progress.pop(partial["request"].request_id, None)
+            batch_gen._partial = None
+            mx.clear_cache()
+        original_remove(uids)
+
+    batch_gen.remove = _patched_remove
+    batch_gen._next = _chunked_next
+
+    logger.info("[chunked-prefill-mllm] installed budget=%d", budget)

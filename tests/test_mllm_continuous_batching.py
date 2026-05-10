@@ -39,6 +39,58 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
 TEST_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
+class TestMLLMPromptCacheEval:
+    def test_collects_kv_and_arrays_cache_tensors(self):
+        from vllm_mlx.mllm_batch_generator import _cache_eval_tensors
+
+        kv_keys = object()
+        kv_values = object()
+        state_a = object()
+        state_b = object()
+
+        class KVLikeCache:
+            keys = kv_keys
+            values = kv_values
+
+            @property
+            def state(self):
+                raise AssertionError("KV cache state should not be read")
+
+        class ArraysLikeCache:
+            state = [state_a, None, state_b]
+
+        class EmptyCache:
+            keys = None
+            values = None
+            state = [None]
+
+        assert _cache_eval_tensors(
+            [KVLikeCache(), ArraysLikeCache(), EmptyCache()]
+        ) == [kv_keys, kv_values, state_a, state_b]
+
+    def test_eval_prompt_cache_flattens_cache_tensors(self, monkeypatch):
+        from vllm_mlx.mllm_batch_generator import _eval_prompt_cache
+
+        kv_keys = object()
+        kv_values = object()
+        state = object()
+        eval_mock = MagicMock()
+        monkeypatch.setattr(mx, "eval", eval_mock)
+
+        class KVLikeCache:
+            keys = kv_keys
+            values = kv_values
+
+        class ArraysLikeCache:
+            pass
+
+        ArraysLikeCache.state = [state]
+
+        _eval_prompt_cache([KVLikeCache(), ArraysLikeCache()])
+
+        eval_mock.assert_called_once_with(kv_keys, kv_values, state)
+
+
 def create_test_image(path: str, size: tuple = (32, 32)) -> str:
     """Create a test image file."""
     try:
@@ -347,6 +399,7 @@ class TestMLLMSchedulerConfig:
         assert config.completion_batch_size == 16
         assert config.enable_vision_cache is True
         assert config.vision_cache_size == 100
+        assert config.chunked_prefill_tokens == 0
 
     def test_custom_config(self):
         """Test custom configuration."""
@@ -357,12 +410,14 @@ class TestMLLMSchedulerConfig:
             prefill_batch_size=2,
             completion_batch_size=8,
             enable_vision_cache=False,
+            chunked_prefill_tokens=512,
         )
 
         assert config.max_num_seqs == 8
         assert config.prefill_batch_size == 2
         assert config.completion_batch_size == 8
         assert config.enable_vision_cache is False
+        assert config.chunked_prefill_tokens == 512
 
 
 class TestMLLMSchedulerAbortMetrics:
@@ -854,6 +909,195 @@ class TestMLLMSchedulerSamplingParams:
         assert dummy_batch.inserted[0].min_p == 0.1
         assert dummy_batch.inserted[0].presence_penalty == 0.3
         assert dummy_batch.inserted[0].repetition_penalty == 1.15
+
+
+class TestMLLMChunkedPrefill:
+    """Tests for MLLM text prefill interleaving."""
+
+    class MergeCache:
+        def __init__(self):
+            self.extended = []
+
+        def merge(self, caches):
+            return self
+
+        def extend(self, other):
+            self.extended.append(other)
+
+    def _make_generator(self, monkeypatch, *, budget=2):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatchGenerator,
+            MLLMBatchStats,
+            install_chunked_prefill_mllm,
+        )
+
+        prompt_cache = self.MergeCache()
+        monkeypatch.setattr(
+            "mlx_lm.models.cache.make_prompt_cache",
+            lambda model, max_kv_size=None: [prompt_cache],
+        )
+        sampler = MagicMock(return_value=mx.array([3], dtype=mx.uint32))
+        monkeypatch.setattr(
+            "mlx_lm.sample_utils.make_sampler",
+            lambda **kwargs: sampler,
+        )
+
+        calls = []
+
+        def language_model(tokens, cache=None):
+            calls.append(tuple(tokens.shape))
+            return mx.array([[[0.0, 1.0, 2.0, 3.0]]] * tokens.shape[0])
+
+        generator = MLLMBatchGenerator.__new__(MLLMBatchGenerator)
+        generator._stats = MLLMBatchStats()
+        generator.stop_tokens = set()
+        generator.unprocessed_requests = []
+        generator.active_batch = None
+        generator.language_model = language_model
+        generator.sampler = sampler
+        generator.max_kv_size = 0
+        generator._preprocess_request = lambda req: None
+        generator._next = MLLMBatchGenerator._next.__get__(
+            generator, MLLMBatchGenerator
+        )
+
+        install_chunked_prefill_mllm(generator, budget=budget)
+        return generator, calls
+
+    def test_long_text_prefill_advances_one_chunk_per_next(self, monkeypatch):
+        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
+
+        generator, calls = self._make_generator(monkeypatch, budget=2)
+        request = MLLMBatchRequest(
+            uid=11,
+            request_id="req-long",
+            prompt="long",
+            max_tokens=4,
+        )
+        request.input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.uint32)
+        generator.unprocessed_requests.append(request)
+
+        assert generator._next() == []
+        assert calls == [(1, 2)]
+        assert generator._partial is not None
+        assert generator._partial["processed"] == 2
+
+        assert generator._next() == []
+        assert calls == [(1, 2), (1, 2)]
+        assert generator._partial["processed"] == 4
+
+        responses = generator._next()
+
+        assert [response.request_id for response in responses] == ["req-long"]
+        assert [response.token for response in responses] == [3]
+        assert generator._partial is None
+        assert calls == [(1, 2), (1, 2), (1, 1), (1, 1)]
+
+    def test_active_decode_runs_while_long_prefill_is_partial(self, monkeypatch):
+        from vllm_mlx.mllm_batch_generator import (
+            MLLMBatch,
+            MLLMBatchRequest,
+        )
+
+        generator, calls = self._make_generator(monkeypatch, budget=2)
+        active_request = MLLMBatchRequest(
+            uid=7,
+            request_id="req-active",
+            prompt="active",
+            max_tokens=4,
+        )
+        generator.active_batch = MLLMBatch(
+            uids=[7],
+            request_ids=["req-active"],
+            y=mx.array([5], dtype=mx.uint32),
+            logprobs=[mx.array([0.0])],
+            max_tokens=[4],
+            num_tokens=[0],
+            cache=[self.MergeCache()],
+            requests=[active_request],
+        )
+        long_request = MLLMBatchRequest(
+            uid=12,
+            request_id="req-long",
+            prompt="long",
+            max_tokens=4,
+        )
+        long_request.input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.uint32)
+        generator.unprocessed_requests.append(long_request)
+
+        responses = generator._next()
+
+        assert [response.request_id for response in responses] == ["req-active"]
+        assert [response.token for response in responses] == [5]
+        assert generator._partial is not None
+        assert generator._partial["request"] is long_request
+        assert calls == [(1, 2), (1, 1)]
+
+    def test_remove_clears_partial_prefill(self, monkeypatch):
+        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
+
+        generator, _ = self._make_generator(monkeypatch, budget=2)
+        request = MLLMBatchRequest(uid=11, request_id="req-long", prompt="long")
+        generator._partial = {
+            "request": request,
+            "cache": [self.MergeCache()],
+            "remaining_ids": mx.array([[3, 4, 5]], dtype=mx.uint32),
+            "processed": 2,
+            "total": 5,
+            "chunk_count": 1,
+        }
+
+        generator.remove([11])
+
+        assert generator._partial is None
+
+
+class TestMLLMChunkedPrefillScheduler:
+    def test_ensure_batch_generator_installs_chunked_prefill(self, monkeypatch):
+        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+        installed = {}
+
+        class FakeBatchGenerator:
+            def __init__(self, **kwargs):
+                installed["batch_kwargs"] = kwargs
+
+        def fake_install(batch_generator, *, budget):
+            installed["batch_generator"] = batch_generator
+            installed["budget"] = budget
+
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_scheduler.MLLMBatchGenerator", FakeBatchGenerator
+        )
+        monkeypatch.setattr(
+            "vllm_mlx.mllm_batch_generator.install_chunked_prefill_mllm",
+            fake_install,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "mlx_lm.sample_utils.make_sampler",
+            lambda **kwargs: MagicMock(),
+        )
+
+        model = MagicMock()
+        model.config = None
+        processor = MagicMock()
+        processor.tokenizer = MagicMock()
+        processor.tokenizer.eos_token_id = 2
+        processor.tokenizer.eos_token_ids = None
+        scheduler = MLLMScheduler(
+            model=model,
+            processor=processor,
+            config=MLLMSchedulerConfig(
+                enable_vision_cache=False,
+                chunked_prefill_tokens=384,
+            ),
+        )
+
+        scheduler._ensure_batch_generator()
+
+        assert installed["batch_generator"] is scheduler.batch_generator
+        assert installed["budget"] == 384
 
 
 class TestMLLMSchedulerVideoParams:
