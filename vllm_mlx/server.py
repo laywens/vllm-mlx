@@ -3173,6 +3173,7 @@ async def status():
         "cache": stats.get("memory_aware_cache")
         or stats.get("paged_cache")
         or stats.get("prefix_cache"),
+        "mtp": stats.get("mtp") or {"enabled": False},
         "requests": stats.get("requests", []),
     }
 
