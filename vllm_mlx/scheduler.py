@@ -81,8 +81,8 @@ def _resolve_repetition_detection_runtime(
 ) -> _RepetitionDetectionRuntimeConfig:
     """Resolve repetition thresholds plus the required token history limit."""
     mode = _normalize_repetition_policy(policy)
-    min_repeat, pattern_lengths, pattern_repeats = (
-        _resolve_repetition_detection_config(mode)
+    min_repeat, pattern_lengths, pattern_repeats = _resolve_repetition_detection_config(
+        mode
     )
     required_history = max(
         min_repeat,

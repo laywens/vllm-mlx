@@ -18,17 +18,17 @@ def _detect_repetition_trigger(tokens: list[int], **kwargs) -> str | None:
 
 def _resolve_repetition_detection_config(policy: str | None):
     resolver = getattr(scheduler, "_resolve_repetition_detection_config", None)
-    assert callable(resolver), (
-        "scheduler must expose _resolve_repetition_detection_config"
-    )
+    assert callable(
+        resolver
+    ), "scheduler must expose _resolve_repetition_detection_config"
     return resolver(policy)
 
 
 def _resolve_repetition_detection_runtime(policy: str | None):
     resolver = getattr(scheduler, "_resolve_repetition_detection_runtime", None)
-    assert callable(resolver), (
-        "scheduler must expose _resolve_repetition_detection_runtime"
-    )
+    assert callable(
+        resolver
+    ), "scheduler must expose _resolve_repetition_detection_runtime"
     return resolver(policy)
 
 
@@ -112,7 +112,9 @@ class TestDetectRepetition:
 
     def test_repetition_policy_normalization_is_case_insensitive(self):
         normalizer = getattr(scheduler, "_normalize_repetition_policy", None)
-        assert callable(normalizer), "scheduler must expose _normalize_repetition_policy"
+        assert callable(
+            normalizer
+        ), "scheduler must expose _normalize_repetition_policy"
 
         assert normalizer("SAFE") == "safe"
         assert normalizer("Strict") == "strict"
@@ -128,7 +130,9 @@ class TestDetectRepetition:
 
     def test_default_batch_generator_wrapper_stops_and_cleans_repetition(self):
         installer = getattr(scheduler, "_install_repetition_detection", None)
-        assert callable(installer), "scheduler must expose _install_repetition_detection"
+        assert callable(
+            installer
+        ), "scheduler must expose _install_repetition_detection"
 
         batch_gen = FakeBatchGenerator([9, 9, 9, 9, 9])
         installer(batch_gen, default_repetition_policy="strict")

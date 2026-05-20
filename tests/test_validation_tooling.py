@@ -34,9 +34,9 @@ def test_serve_profile_benchmark_records_request_failure(monkeypatch):
 
 def test_serve_profile_benchmark_reports_failure_rate():
     summarizer = getattr(serve_profile_benchmark, "_summarize_result_status", None)
-    assert callable(summarizer), (
-        "serve_profile_benchmark must expose _summarize_result_status"
-    )
+    assert callable(
+        summarizer
+    ), "serve_profile_benchmark must expose _summarize_result_status"
 
     status = summarizer([{"ok": True}, {"ok": False}, {"error": "missing ok"}])
 
