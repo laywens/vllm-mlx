@@ -12,6 +12,77 @@ import pytest
 pytestmark = pytest.mark.anyio
 
 
+class TestSimpleEngineRepetitionPolicy:
+    async def test_llm_chat_does_not_leak_repetition_policy_to_model_call(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        model = MagicMock()
+        model.tokenizer = MagicMock()
+        model.tokenizer.apply_chat_template = MagicMock(return_value=[101, 102])
+
+        def strict_chat(
+            *,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            tools,
+            chat_template_kwargs,
+        ):
+            del messages, max_tokens, temperature, top_p, tools, chat_template_kwargs
+            return MagicMock(text="ok", tokens=[1], finish_reason="stop")
+
+        model.chat = MagicMock(side_effect=strict_chat)
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-llm")
+            engine._model = model
+            engine._loaded = True
+
+            result = await engine.chat(
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=8,
+                repetition_policy="strict",
+            )
+
+        _, chat_kwargs = model.chat.call_args
+        assert "repetition_policy" not in chat_kwargs
+        assert result.text == "ok"
+
+    async def test_llm_generate_does_not_leak_repetition_policy_to_stream_call(self):
+        from vllm_mlx.engine.simple import SimpleEngine
+
+        model = MagicMock()
+        model.tokenizer = MagicMock()
+        model.tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+
+        def strict_stream_generate(*, prompt, max_tokens, temperature, top_p, stop):
+            del prompt, max_tokens, temperature, top_p, stop
+            chunk = MagicMock()
+            chunk.text = "ok"
+            chunk.finished = True
+            chunk.finish_reason = "stop"
+            chunk.prompt_tokens = 3
+            yield chunk
+
+        model.stream_generate = MagicMock(side_effect=strict_stream_generate)
+
+        with patch("vllm_mlx.engine.simple.is_mllm_model", return_value=False):
+            engine = SimpleEngine("test-llm")
+            engine._model = model
+            engine._loaded = True
+
+            result = await engine.generate(
+                prompt="ping",
+                max_tokens=8,
+                repetition_policy="safe",
+            )
+
+        _, stream_kwargs = model.stream_generate.call_args
+        assert "repetition_policy" not in stream_kwargs
+        assert result.text == "ok"
+
+
 class TestSimpleEngineConcurrency:
     """Test SimpleEngine lock behavior with concurrent requests."""
 

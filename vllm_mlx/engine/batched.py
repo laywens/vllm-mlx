@@ -775,6 +775,7 @@ class BatchedEngine(BaseEngine):
             min_p=kwargs.pop("min_p", 0.0),
             presence_penalty=kwargs.pop("presence_penalty", 0.0),
             repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
+            repetition_policy=kwargs.pop("repetition_policy", None),
             stop=stop or [],
             logits_processors=kwargs.pop("logits_processors", None),
         )
@@ -865,6 +866,7 @@ class BatchedEngine(BaseEngine):
             min_p=kwargs.pop("min_p", 0.0),
             presence_penalty=kwargs.pop("presence_penalty", 0.0),
             repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
+            repetition_policy=kwargs.pop("repetition_policy", None),
             stop=stop or [],
             logits_processors=kwargs.pop("logits_processors", None),
         )

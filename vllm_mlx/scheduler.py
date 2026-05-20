@@ -42,6 +42,73 @@ CACHE_CORRUPTION_PATTERNS = [
 ]
 
 
+_REPETITION_SAFE_MODE = "safe"
+_REPETITION_STRICT_MODE = "strict"
+_REPETITION_SUPPORTED_MODES = (_REPETITION_SAFE_MODE, _REPETITION_STRICT_MODE)
+
+
+def _normalize_repetition_policy(policy: str | None) -> str:
+    """Normalize repetition detector policy with a conservative default."""
+    if isinstance(policy, str) and policy in _REPETITION_SUPPORTED_MODES:
+        return policy
+    return _REPETITION_SAFE_MODE
+
+
+def _resolve_repetition_detection_config(
+    policy: str | None,
+) -> tuple[int, tuple[int, ...], int]:
+    """Resolve detector thresholds for the selected repetition policy."""
+    mode = _normalize_repetition_policy(policy)
+    if mode == _REPETITION_STRICT_MODE:
+        return 4, (2, 3, 4, 5, 6), 4
+    return 8, (2, 3, 4), 6
+
+
+def _detect_repetition_trigger(
+    recent_tokens: list[int],
+    *,
+    min_repeat: int = 8,
+    pattern_lengths: tuple[int, ...] = (2, 3, 4),
+    pattern_repeats: int = 6,
+) -> str | None:
+    """Return a trigger label when recent tokens are degenerately repetitive."""
+    if len(recent_tokens) < min_repeat:
+        return None
+
+    tail = recent_tokens[-min_repeat:]
+    if len(set(tail)) == 1:
+        return "single_token_run"
+
+    for seq_len in pattern_lengths:
+        check_len = seq_len * pattern_repeats
+        if len(recent_tokens) < check_len:
+            continue
+        tail = recent_tokens[-check_len:]
+        pattern = tail[:seq_len]
+        if all(tail[i] == pattern[i % seq_len] for i in range(check_len)):
+            return f"pattern_loop_len_{seq_len}"
+
+    return None
+
+
+def _detect_repetition(
+    recent_tokens: list[int],
+    min_repeat: int = 8,
+    pattern_lengths: tuple[int, ...] = (2, 3, 4),
+    pattern_repeats: int = 6,
+) -> bool:
+    """Compatibility wrapper returning boolean repetition detection."""
+    return (
+        _detect_repetition_trigger(
+            recent_tokens,
+            min_repeat=min_repeat,
+            pattern_lengths=pattern_lengths,
+            pattern_repeats=pattern_repeats,
+        )
+        is not None
+    )
+
+
 class SchedulingPolicy(Enum):
     """Scheduling policy for request ordering."""
 
@@ -111,10 +178,12 @@ class SchedulerConfig:
     enable_mtp: bool = False
     mtp_num_draft_tokens: int = 1  # Number of draft tokens from MTP head
     mtp_optimistic: bool = False  # Skip acceptance check for max speed
+    repetition_policy: str = _REPETITION_SAFE_MODE
 
     def __post_init__(self) -> None:
         if self.mllm_prefill_step_size is not None and self.mllm_prefill_step_size <= 0:
             raise ValueError("mllm_prefill_step_size must be > 0 when provided")
+        self.repetition_policy = _normalize_repetition_policy(self.repetition_policy)
 
 
 @dataclass
@@ -172,6 +241,7 @@ def _install_chunked_prefill(
     pending_abort_ids: Optional[Set[str]] = None,
     uid_to_request_id: Optional[Dict[int, str]] = None,
     requests: Optional[Dict[str, Any]] = None,
+    default_repetition_policy: str = _REPETITION_SAFE_MODE,
 ) -> None:
     """
     Monkey-patch a BatchGenerator instance so that large prefills are
@@ -257,6 +327,9 @@ def _install_chunked_prefill(
     # Partial prefill state (None when no prefill in progress)
     batch_gen._partial = None
 
+    # Repetition detection: track recent generated tokens per UID.
+    _repetition_buffers: Dict[int, list[int]] = {}
+
     # Monkey-patch _process_prompts to capture prompt-only cache state.
     # At the point where _process_prompts returns, the Batch cache contains
     # the exact prompt-only state: all prompt tokens have been processed
@@ -312,17 +385,61 @@ def _install_chunked_prefill(
             cache_out = None
             num_tok += 1
             batch.num_tokens[e] = num_tok
+
+            buf = _repetition_buffers.get(uid)
+            if buf is None:
+                buf = []
+                _repetition_buffers[uid] = buf
+            buf.append(t)
+            if len(buf) > 32:
+                del buf[: len(buf) - 32]
+
+            effective_repetition_policy = _normalize_repetition_policy(
+                default_repetition_policy
+            )
+            if requests is not None and uid_to_request_id is not None:
+                request_id = uid_to_request_id.get(uid)
+                request = requests.get(request_id) if request_id else None
+                sampling_params = getattr(request, "sampling_params", None)
+                request_policy = getattr(sampling_params, "repetition_policy", None)
+                if request_policy:
+                    effective_repetition_policy = _normalize_repetition_policy(
+                        request_policy
+                    )
+
+            min_repeat, pattern_lengths, pattern_repeats = (
+                _resolve_repetition_detection_config(effective_repetition_policy)
+            )
+            repetition_trigger = _detect_repetition_trigger(
+                buf,
+                min_repeat=min_repeat,
+                pattern_lengths=pattern_lengths,
+                pattern_repeats=pattern_repeats,
+            )
+
             if t in self.stop_tokens:
                 finish_reason = "stop"
                 end_idx.append(e)
             elif num_tok >= max_tok:
                 finish_reason = "length"
                 end_idx.append(e)
+            elif repetition_trigger is not None:
+                finish_reason = "stop"
+                end_idx.append(e)
+                logger.info(
+                    "[repetition_detector] uid=%s stopped after %s tokens "
+                    "(mode=%s trigger=%s)",
+                    uid,
+                    num_tok,
+                    effective_repetition_policy,
+                    repetition_trigger,
+                )
             else:
                 finish_reason = None
                 keep_idx.append(e)
             if finish_reason is not None:
                 cache_out = batch.extract_cache(e)
+                _repetition_buffers.pop(uid, None)
             responses.append(
                 self.Response(uid, t, logprobs[e], finish_reason, cache_out)
             )
@@ -665,6 +782,8 @@ def _install_chunked_prefill(
                 )
                 _self._partial = None
                 mx.clear_cache()  # flush Metal encoders after dropping partial state
+        for uid in uids_to_remove:
+            _repetition_buffers.pop(uid, None)
         _orig_remove(uids_to_remove)
 
     batch_gen._next = _chunked_next
@@ -1365,6 +1484,7 @@ class Scheduler:
                 pending_abort_ids=self._pending_abort_ids,
                 uid_to_request_id=self.uid_to_request_id,
                 requests=self.requests,
+                default_repetition_policy=self.config.repetition_policy,
             )
         elif need_chunked and not chunked_compatible:
             logger.warning(
