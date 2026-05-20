@@ -82,21 +82,50 @@ def _call_chat(
         body["enable_thinking"] = False
     if extra_body:
         body.update(extra_body)
-    response = requests.post(
-        f"{base_url.rstrip('/')}/v1/chat/completions",
-        json=body,
-        timeout=timeout,
-    )
-    latency_s = time.perf_counter() - started
-    response.raise_for_status()
-    payload = response.json()
-    usage = payload.get("usage") or {}
+    try:
+        response = requests.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            json=body,
+            timeout=timeout,
+        )
+        latency_s = time.perf_counter() - started
+        response.raise_for_status()
+        payload = response.json()
+        usage = payload.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or 0)
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        latency_s = time.perf_counter() - started
+        return {
+            "ok": False,
+            "error": str(exc),
+            "prompt": prompt,
+            "latency_s": round(latency_s, 4),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
     return {
+        "ok": True,
+        "error": None,
         "prompt": prompt,
         "latency_s": round(latency_s, 4),
-        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-        "completion_tokens": int(usage.get("completion_tokens") or 0),
-        "total_tokens": int(usage.get("total_tokens") or 0),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _summarize_result_status(results: list[dict]) -> dict:
+    successful_requests = sum(1 for result in results if result.get("ok") is True)
+    failed_requests = len(results) - successful_requests
+    failure_rate = failed_requests / len(results) if results else 0.0
+    return {
+        "successful_requests": successful_requests,
+        "failed_requests": failed_requests,
+        "failure_rate": round(failure_rate, 4),
     }
 
 
@@ -196,7 +225,7 @@ def main() -> int:
     if prompts and args.warmup_requests > 0:
         warmup_prompt = prompts[0]
         for _ in range(args.warmup_requests):
-            _call_chat(
+            warmup_result = _call_chat(
                 base_url=args.base_url,
                 model=args.model,
                 prompt=warmup_prompt,
@@ -207,6 +236,11 @@ def main() -> int:
                 disable_thinking=args.disable_thinking,
                 extra_body=extra_body,
             )
+            if not warmup_result.get("ok"):
+                raise RuntimeError(
+                    "Warmup request failed: "
+                    f"{warmup_result.get('error') or 'unknown error'}"
+                )
 
     started = time.perf_counter()
     results: list[dict] = []
@@ -234,6 +268,7 @@ def main() -> int:
     total_prompt_tokens = sum(r["prompt_tokens"] for r in results)
     total_completion_tokens = sum(r["completion_tokens"] for r in results)
     total_tokens = sum(r["total_tokens"] for r in results)
+    result_status = _summarize_result_status(results)
 
     summary = {
         "total_time_s": round(total_time, 4),
@@ -255,6 +290,7 @@ def main() -> int:
         "advertised_model_id": advertised_model_id,
         "model_id_guard_substring": args.require_model_id_substring,
         "extra_body": extra_body or None,
+        **result_status,
     }
 
     print("Results:")
@@ -266,6 +302,9 @@ def main() -> int:
     print(f"  Total tokens: {summary['total_tokens']}")
     print(f"  Tokens/second: {summary['tokens_per_second']:.2f}")
     print(f"  Throughput: {summary['throughput_tok_per_s']:.2f} tok/s")
+    print(f"  Successful requests: {summary['successful_requests']}")
+    print(f"  Failed requests: {summary['failed_requests']}")
+    print(f"  Failure rate: {summary['failure_rate']:.2%}")
 
     if args.json_out:
         out_path = Path(args.json_out)

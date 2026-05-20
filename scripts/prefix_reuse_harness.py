@@ -23,7 +23,7 @@ def _load_fixture(path: str) -> dict:
         raise ValueError(f"Fixture {fixture_path} must include at least three suffixes")
 
     normalized_suffixes: list[dict[str, str]] = []
-    for index, item in enumerate(suffixes[:3], start=1):
+    for index, item in enumerate(suffixes, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"Fixture suffix #{index} must be an object")
         label = item.get("label") or f"suffix-{index}"

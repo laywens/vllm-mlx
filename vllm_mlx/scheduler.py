@@ -45,12 +45,24 @@ CACHE_CORRUPTION_PATTERNS = [
 _REPETITION_SAFE_MODE = "safe"
 _REPETITION_STRICT_MODE = "strict"
 _REPETITION_SUPPORTED_MODES = (_REPETITION_SAFE_MODE, _REPETITION_STRICT_MODE)
+_REPETITION_BUFFER_MARGIN = 8
+
+
+@dataclass(frozen=True)
+class _RepetitionDetectionRuntimeConfig:
+    mode: str
+    min_repeat: int
+    pattern_lengths: tuple[int, ...]
+    pattern_repeats: int
+    buffer_token_limit: int
 
 
 def _normalize_repetition_policy(policy: str | None) -> str:
     """Normalize repetition detector policy with a conservative default."""
-    if isinstance(policy, str) and policy in _REPETITION_SUPPORTED_MODES:
-        return policy
+    if isinstance(policy, str):
+        mode = policy.strip().lower()
+        if mode in _REPETITION_SUPPORTED_MODES:
+            return mode
     return _REPETITION_SAFE_MODE
 
 
@@ -62,6 +74,46 @@ def _resolve_repetition_detection_config(
     if mode == _REPETITION_STRICT_MODE:
         return 4, (2, 3, 4, 5, 6), 4
     return 8, (2, 3, 4), 6
+
+
+def _resolve_repetition_detection_runtime(
+    policy: str | None,
+) -> _RepetitionDetectionRuntimeConfig:
+    """Resolve repetition thresholds plus the required token history limit."""
+    mode = _normalize_repetition_policy(policy)
+    min_repeat, pattern_lengths, pattern_repeats = (
+        _resolve_repetition_detection_config(mode)
+    )
+    required_history = max(
+        min_repeat,
+        max(seq_len * pattern_repeats for seq_len in pattern_lengths),
+    )
+    return _RepetitionDetectionRuntimeConfig(
+        mode=mode,
+        min_repeat=min_repeat,
+        pattern_lengths=pattern_lengths,
+        pattern_repeats=pattern_repeats,
+        buffer_token_limit=required_history + _REPETITION_BUFFER_MARGIN,
+    )
+
+
+def _resolve_repetition_runtime_for_uid(
+    uid: int,
+    *,
+    uid_to_request_id: Optional[Dict[int, str]] = None,
+    requests: Optional[Dict[str, Any]] = None,
+    default_repetition_policy: str = _REPETITION_SAFE_MODE,
+) -> _RepetitionDetectionRuntimeConfig:
+    """Resolve the effective repetition runtime config for one request uid."""
+    effective_repetition_policy = default_repetition_policy
+    if requests is not None and uid_to_request_id is not None:
+        request_id = uid_to_request_id.get(uid)
+        request = requests.get(request_id) if request_id else None
+        sampling_params = getattr(request, "sampling_params", None)
+        request_policy = getattr(sampling_params, "repetition_policy", None)
+        if request_policy:
+            effective_repetition_policy = request_policy
+    return _resolve_repetition_detection_runtime(effective_repetition_policy)
 
 
 def _detect_repetition_trigger(
@@ -107,6 +159,112 @@ def _detect_repetition(
         )
         is not None
     )
+
+
+def _install_repetition_detection(
+    batch_gen: "BatchGenerator",
+    *,
+    uid_to_request_id: Optional[Dict[int, str]] = None,
+    requests: Optional[Dict[str, Any]] = None,
+    default_repetition_policy: str = _REPETITION_SAFE_MODE,
+) -> None:
+    """Monkey-patch public BatchGenerator.next() with repetition safety stops."""
+    if getattr(batch_gen, "_vllm_mlx_repetition_detection_installed", False):
+        return
+
+    _orig_next = batch_gen.next
+    _orig_remove = batch_gen.remove
+    _repetition_buffers: Dict[int, list[int]] = {}
+    _runtime_configs: Dict[int, _RepetitionDetectionRuntimeConfig] = {}
+
+    def _cleanup_uid(uid: int) -> None:
+        _repetition_buffers.pop(uid, None)
+        _runtime_configs.pop(uid, None)
+
+    def _runtime_config_for_uid(uid: int) -> _RepetitionDetectionRuntimeConfig:
+        runtime_config = _runtime_configs.get(uid)
+        if runtime_config is None:
+            runtime_config = _resolve_repetition_runtime_for_uid(
+                uid,
+                uid_to_request_id=uid_to_request_id,
+                requests=requests,
+                default_repetition_policy=default_repetition_policy,
+            )
+            _runtime_configs[uid] = runtime_config
+        return runtime_config
+
+    def _remove_stopped_uids(uids: list[int]):
+        try:
+            return _orig_remove(uids, return_prompt_caches=True) or {}
+        except TypeError:
+            _orig_remove(uids)
+            return {}
+
+    def _patched_remove(uids_to_remove, *args, **kwargs):
+        for uid in uids_to_remove:
+            _cleanup_uid(uid)
+        return _orig_remove(uids_to_remove, *args, **kwargs)
+
+    def _patched_next():
+        result = _orig_next()
+        generation_responses = result[1] if isinstance(result, tuple) else result
+        if not generation_responses:
+            return result
+
+        stopped_responses = {}
+        for response in generation_responses:
+            uid = getattr(response, "uid", None)
+            token = getattr(response, "token", None)
+            if uid is None or token is None:
+                continue
+
+            if getattr(response, "finish_reason", None) is not None:
+                _cleanup_uid(uid)
+                continue
+
+            runtime_config = _runtime_config_for_uid(uid)
+            buf = _repetition_buffers.get(uid)
+            if buf is None:
+                buf = []
+                _repetition_buffers[uid] = buf
+            buf.append(token)
+            if len(buf) > runtime_config.buffer_token_limit:
+                del buf[: len(buf) - runtime_config.buffer_token_limit]
+
+            repetition_trigger = _detect_repetition_trigger(
+                buf,
+                min_repeat=runtime_config.min_repeat,
+                pattern_lengths=runtime_config.pattern_lengths,
+                pattern_repeats=runtime_config.pattern_repeats,
+            )
+            if repetition_trigger is None:
+                continue
+
+            response.finish_reason = "stop"
+            stopped_responses[uid] = response
+            logger.info(
+                "[repetition_detector] uid=%s stopped (mode=%s trigger=%s)",
+                uid,
+                runtime_config.mode,
+                repetition_trigger,
+            )
+
+        if stopped_responses:
+            prompt_caches = _remove_stopped_uids(list(stopped_responses))
+            for uid, response in stopped_responses.items():
+                _cleanup_uid(uid)
+                cache_entry = prompt_caches.get(uid)
+                if isinstance(cache_entry, tuple) and len(cache_entry) == 2:
+                    response.prompt_cache = cache_entry[0]
+                    response.all_tokens = cache_entry[1]
+                elif cache_entry is not None:
+                    response.prompt_cache = cache_entry
+
+        return result
+
+    batch_gen.next = _patched_next
+    batch_gen.remove = _patched_remove
+    batch_gen._vllm_mlx_repetition_detection_installed = True
 
 
 class SchedulingPolicy(Enum):
@@ -329,6 +487,7 @@ def _install_chunked_prefill(
 
     # Repetition detection: track recent generated tokens per UID.
     _repetition_buffers: Dict[int, list[int]] = {}
+    _repetition_runtime_configs: Dict[int, _RepetitionDetectionRuntimeConfig] = {}
 
     # Monkey-patch _process_prompts to capture prompt-only cache state.
     # At the point where _process_prompts returns, the Batch cache contains
@@ -391,30 +550,23 @@ def _install_chunked_prefill(
                 buf = []
                 _repetition_buffers[uid] = buf
             buf.append(t)
-            if len(buf) > 32:
-                del buf[: len(buf) - 32]
+            runtime_config = _repetition_runtime_configs.get(uid)
+            if runtime_config is None:
+                runtime_config = _resolve_repetition_runtime_for_uid(
+                    uid,
+                    uid_to_request_id=uid_to_request_id,
+                    requests=requests,
+                    default_repetition_policy=default_repetition_policy,
+                )
+                _repetition_runtime_configs[uid] = runtime_config
+            if len(buf) > runtime_config.buffer_token_limit:
+                del buf[: len(buf) - runtime_config.buffer_token_limit]
 
-            effective_repetition_policy = _normalize_repetition_policy(
-                default_repetition_policy
-            )
-            if requests is not None and uid_to_request_id is not None:
-                request_id = uid_to_request_id.get(uid)
-                request = requests.get(request_id) if request_id else None
-                sampling_params = getattr(request, "sampling_params", None)
-                request_policy = getattr(sampling_params, "repetition_policy", None)
-                if request_policy:
-                    effective_repetition_policy = _normalize_repetition_policy(
-                        request_policy
-                    )
-
-            min_repeat, pattern_lengths, pattern_repeats = (
-                _resolve_repetition_detection_config(effective_repetition_policy)
-            )
             repetition_trigger = _detect_repetition_trigger(
                 buf,
-                min_repeat=min_repeat,
-                pattern_lengths=pattern_lengths,
-                pattern_repeats=pattern_repeats,
+                min_repeat=runtime_config.min_repeat,
+                pattern_lengths=runtime_config.pattern_lengths,
+                pattern_repeats=runtime_config.pattern_repeats,
             )
 
             if t in self.stop_tokens:
@@ -431,7 +583,7 @@ def _install_chunked_prefill(
                     "(mode=%s trigger=%s)",
                     uid,
                     num_tok,
-                    effective_repetition_policy,
+                    runtime_config.mode,
                     repetition_trigger,
                 )
             else:
@@ -440,6 +592,7 @@ def _install_chunked_prefill(
             if finish_reason is not None:
                 cache_out = batch.extract_cache(e)
                 _repetition_buffers.pop(uid, None)
+                _repetition_runtime_configs.pop(uid, None)
             responses.append(
                 self.Response(uid, t, logprobs[e], finish_reason, cache_out)
             )
@@ -784,7 +937,8 @@ def _install_chunked_prefill(
                 mx.clear_cache()  # flush Metal encoders after dropping partial state
         for uid in uids_to_remove:
             _repetition_buffers.pop(uid, None)
-        _orig_remove(uids_to_remove)
+            _repetition_runtime_configs.pop(uid, None)
+        return _orig_remove(uids_to_remove)
 
     batch_gen._next = _chunked_next
     batch_gen._generation_step = _generation_step
@@ -1515,6 +1669,14 @@ class Scheduler:
                     "[MTP] --enable-mtp is set but model has no MTP head "
                     "(model.mtp is None). MTP will be disabled."
                 )
+
+        if not (need_chunked and chunked_compatible):
+            _install_repetition_detection(
+                bg,
+                uid_to_request_id=self.uid_to_request_id,
+                requests=self.requests,
+                default_repetition_policy=self.config.repetition_policy,
+            )
 
         return bg
 
